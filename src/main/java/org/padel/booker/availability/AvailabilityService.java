@@ -1,169 +1,89 @@
 package org.padel.booker.availability;
 
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.node.JsonNodeFactory;
 import org.padel.booker.client.SportyApiClient;
-import org.padel.booker.config.SportyProperties;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
-import java.time.*;
-import java.util.*;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 /**
- * Builds the week availability grid from live data: courts (+ working_hours) minus existing
- * reservations. Nothing is cached — every call fetches fresh from the upstream API.
+ * Builds the week availability grid from the upstream's server-precomputed {@code parsed_reservations}
+ * (one live call, all courts, whole week). Nothing is cached — every request re-fetches.
+ *
+ * Slot time codes are decimal-hours x100: 700=07:00, 850=08:30, 1450=14:30, 2050=20:30, 2200=22:00.
+ * A slot with {@code id == 0} is free (bookable) and carries a {@code price}; anything else is booked.
  */
 @Service
 public class AvailabilityService {
 
-    private static final Logger log = LoggerFactory.getLogger(AvailabilityService.class);
-
     private final SportyApiClient api;
-    private final ZoneId zone;
 
-    public AvailabilityService(SportyApiClient api, SportyProperties props) {
+    public AvailabilityService(SportyApiClient api) {
         this.api = api;
-        this.zone = ZoneId.of(props.getTimezone());
     }
 
     public AvailabilityViews.Week getWeek(LocalDate from, LocalDate to) {
-        JsonNode courts = arrayOf(api.getCourts());
-        Set<String> booked = bookedKeys(api.getReservations(from, to, null));
+        JsonNode resp = api.getCourtsWithAvailability(from, to);
+        JsonNode courts = resp.has("data") ? resp.get("data") : resp;
 
         List<AvailabilityViews.CourtWeek> courtWeeks = new ArrayList<>();
         for (JsonNode court : courts) {
-            if (!court.has("working_hours")) continue;
             long courtId = court.path("id").asLong();
             String name = court.path("name").asText();
             String type = court.path("type").asText();
             int duration = court.path("reservation_duration").asInt(90);
-            JsonNode workingHours = court.path("working_hours");
+            JsonNode parsed = court.path("parsed_reservations");
 
             List<AvailabilityViews.CourtDay> days = new ArrayList<>();
             for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
-                days.add(new AvailabilityViews.CourtDay(d.toString(),
-                        slotsForDay(courtId, d, duration, workingHours, booked)));
+                days.add(new AvailabilityViews.CourtDay(d.toString(), slotsForDay(parsed.path(d.toString()))));
             }
             courtWeeks.add(new AvailabilityViews.CourtWeek(courtId, name, type, duration, days));
         }
         return new AvailabilityViews.Week(from.toString(), to.toString(), courtWeeks);
     }
 
-    private List<AvailabilityViews.Slot> slotsForDay(long courtId, LocalDate date, int duration,
-                                                     JsonNode workingHours, Set<String> booked) {
-        int dow = date.getDayOfWeek().getValue(); // 1=Mon .. 7=Sun
-        // time-of-day minutes -> min price among matching active rules
-        TreeMap<Integer, BigDecimal> slotPrices = new TreeMap<>();
+    private List<AvailabilityViews.Slot> slotsForDay(JsonNode dayNode) {
+        List<AvailabilityViews.Slot> slots = new ArrayList<>();
+        if (dayNode == null || !dayNode.isObject()) return slots;
 
-        for (JsonNode wh : workingHours) {
-            if (wh.path("working").asInt(1) != 1) continue;
-            if (!worksOn(wh, dow)) continue;
-            if (!activeOn(wh, date)) continue;
-
-            int startMin = parseMinutes(wh.path("start_time").asText(null));
-            int endMin = parseMinutes(wh.path("end_time").asText(null));
-            if (startMin < 0 || endMin < 0) continue;
-            if (endMin <= startMin) endMin += 1440; // window crosses midnight
-
-            BigDecimal price = wh.hasNonNull("price") ? wh.get("price").decimalValue() : null;
-
-            for (int s = startMin; s + duration <= endMin; s += duration) {
-                if (s >= 1440) continue; // slot starts on the next calendar day
-                slotPrices.merge(s, price, AvailabilityService::minPrice);
-            }
+        // Sort by numeric time code.
+        TreeMap<Integer, JsonNode> byTime = new TreeMap<>();
+        for (Map.Entry<String, JsonNode> e : dayNode.properties()) {
+            JsonNode slot = e.getValue();
+            int time = slot.path("time").asInt(parseIntOr(e.getKey(), -1));
+            if (time < 0) continue;
+            if (slot.path("hidden").asBoolean(false)) continue; // blocked slot
+            byTime.put(time, slot);
         }
 
-        List<AvailabilityViews.Slot> slots = new ArrayList<>();
-        for (Map.Entry<Integer, BigDecimal> e : slotPrices.entrySet()) {
-            int min = e.getKey();
-            int hhmm = toHhmm(min);
-            String fmt = fmt(min);
-            boolean isBooked = booked.contains(key(courtId, date, min));
-            slots.add(new AvailabilityViews.Slot(hhmm, fmt, isBooked, e.getValue()));
+        for (Map.Entry<Integer, JsonNode> e : byTime.entrySet()) {
+            int time = e.getKey();
+            JsonNode slot = e.getValue();
+            boolean booked = slot.path("id").asLong(0) != 0;
+            BigDecimal price = (!booked && slot.hasNonNull("price")) ? slot.get("price").decimalValue() : null;
+            slots.add(new AvailabilityViews.Slot(time, fmt(time), booked, price));
         }
         return slots;
     }
 
-    private Set<String> bookedKeys(JsonNode reservationsResponse) {
-        Set<String> set = new HashSet<>();
-        for (JsonNode r : arrayOf(reservationsResponse)) {
-            JsonNode courtNode = r.path("court");
-            long courtId = courtNode.path("id").asLong();
-            String fromStr = r.path("from").asText(null);
-            if (courtId == 0 || fromStr == null) continue;
-            ZonedDateTime localStart = Instant.parse(fromStr).atZone(zone);
-            int min = localStart.getHour() * 60 + localStart.getMinute();
-            set.add(key(courtId, localStart.toLocalDate(), min));
-        }
-        return set;
+    /** Decimal-hours x100 -> "HH:mm". 1450 -> "14:30", 700 -> "07:00". */
+    private static String fmt(int timeCode) {
+        int hours = timeCode / 100;
+        int minutes = Math.round((timeCode % 100) * 0.6f); // .50 -> 30, .00 -> 0
+        return String.format("%02d:%02d", hours, minutes);
     }
 
-    // ---- helpers ----
-
-    private boolean worksOn(JsonNode wh, int dow) {
-        JsonNode days = wh.path("working_days");
-        if (days.isArray()) {
-            for (JsonNode d : days) {
-                if (d.asInt(-1) == dow || d.asText("").equals(String.valueOf(dow))) return true;
-            }
-            return false;
-        }
-        return true;
-    }
-
-    private boolean activeOn(JsonNode wh, LocalDate date) {
-        Instant noon = date.atTime(12, 0).atZone(zone).toInstant();
-        Instant activeFrom = parseInstant(wh.path("active_from").asText(null));
-        Instant activeTo = parseInstant(wh.path("active_to").asText(null));
-        if (activeFrom != null && noon.isBefore(activeFrom)) return false;
-        if (activeTo != null && noon.isAfter(activeTo)) return false;
-        return true;
-    }
-
-    private static Instant parseInstant(String s) {
-        if (s == null) return null;
+    private static int parseIntOr(String s, int fallback) {
         try {
-            return OffsetDateTime.parse(s).toInstant();
-        } catch (RuntimeException e) {
-            try { return Instant.parse(s); } catch (RuntimeException e2) { return null; }
-        }
-    }
-
-    private static BigDecimal minPrice(BigDecimal a, BigDecimal b) {
-        if (a == null) return b;
-        if (b == null) return a;
-        return a.compareTo(b) <= 0 ? a : b;
-    }
-
-    private static int parseMinutes(String hhmm) {
-        if (hhmm == null || !hhmm.contains(":")) return -1;
-        String[] p = hhmm.split(":");
-        try {
-            return Integer.parseInt(p[0].trim()) * 60 + Integer.parseInt(p[1].trim());
+            return Integer.parseInt(s);
         } catch (NumberFormatException e) {
-            return -1;
+            return fallback;
         }
-    }
-
-    private static int toHhmm(int min) {
-        return (min / 60) * 100 + (min % 60);
-    }
-
-    private static String fmt(int min) {
-        return String.format("%02d:%02d", min / 60, min % 60);
-    }
-
-    private static String key(long courtId, LocalDate date, int minutes) {
-        return courtId + "|" + date + "|" + minutes;
-    }
-
-    /** Unwrap {data:[...]} or accept a bare array. */
-    private static JsonNode arrayOf(JsonNode node) {
-        if (node == null) return JsonNodeFactory.instance.arrayNode();
-        if (node.has("data")) return node.get("data");
-        return node;
     }
 }

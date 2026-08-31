@@ -102,42 +102,25 @@ public class SportyApiClient {
     }
 
     /**
-     * All reservations in the club between two dates (inclusive), optionally one court.
-     * The upstream paginates (default ~15/page) with no stable default ordering, so we raise the
-     * page size and still loop every page, accumulating into one array. Returns an array of
-     * reservation items (already unwrapped from the {data,...} envelope).
+     * Courts with the server-precomputed availability grid for a date range: each court carries a
+     * {@code parsed_reservations} map (date -> timeCode -> slot). This is exactly what the web app's
+     * week view uses. Free slots have {@code id:0} and a {@code price}; booked slots have a non-zero
+     * {@code id} plus {@code players}. One call covers all courts and the whole week.
+     *
+     * Note: slot time codes are decimal-hours x100 (07:00=700, 14:30=1450, 20:30=2050).
      */
-    public JsonNode getReservations(LocalDate from, LocalDate to, Long courtId) {
-        ArrayNode all = JsonNodeFactory.instance.arrayNode();
-        int page = 1;
-        int lastPage;
-        do {
-            final int p = page;
-            JsonNode resp = withAuthRetry(token -> api.get()
-                    .uri(b -> {
-                        b.path("/reservation")
-                                .queryParam("filter[club]", props.getClubId())
-                                .queryParam("filter[from]", from.toString())
-                                .queryParam("filter[to]", to.toString())
-                                .queryParam("limit", 1000)
-                                .queryParam("page", p);
-                        if (courtId != null) {
-                            b.queryParam("filter[court]", courtId);
-                        }
-                        return b.build();
-                    })
-                    .header(HttpHeaders.AUTHORIZATION, bearer(token))
-                    .retrieve()
-                    .body(JsonNode.class));
-            if (resp == null) break;
-            JsonNode data = resp.has("data") ? resp.get("data") : resp;
-            if (data.isArray()) {
-                data.forEach(all::add);
-            }
-            lastPage = resp.path("meta").path("last_page").asInt(1);
-            page++;
-        } while (page <= lastPage && page <= 50); // hard guard against runaway paging
-        return all;
+    public JsonNode getCourtsWithAvailability(LocalDate from, LocalDate to) {
+        return withAuthRetry(token -> api.get()
+                .uri(b -> b.path("/court")
+                        .queryParam("filter[is_active]", 1)
+                        .queryParam("filter[club_id]", props.getClubId())
+                        .queryParam("from_date", from.toString())
+                        .queryParam("to_date", to.toString())
+                        .queryParam("parsed2", true)
+                        .build())
+                .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                .retrieve()
+                .body(JsonNode.class));
     }
 
     /** POST /reservation/price — returns {"<playerId>": price}. */

@@ -125,7 +125,10 @@ public class BookingService {
         return total;
     }
 
-    private static String formatSlot(int hhmm) {
-        return String.format("%02d:%02d", hhmm / 100, hhmm % 100);
+    /** Decimal-hours x100 -> "HH:mm". 1450 -> "14:30", 700 -> "07:00". */
+    private static String formatSlot(int timeCode) {
+        int hours = timeCode / 100;
+        int minutes = Math.round((timeCode % 100) * 0.6f);
+        return String.format("%02d:%02d", hours, minutes);
     }
 }
