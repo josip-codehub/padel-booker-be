@@ -1,0 +1,39 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: padel-booker-be
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/padel}
+    username: ${DB_USER:padel}
+    password: ${DB_PASSWORD:padel}
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+
+sporty:
+  auth-base-url: ${SPORTY_AUTH_BASE_URL:https://api.sporty.plus/api/v3}
+  api-base-url: ${SPORTY_API_BASE_URL:https://api.tenis.plus/v2}
+  origin: ${SPORTY_ORIGIN:https://modesto.sporty.plus}
+  language: en
+  club-id: ${SPORTY_CLUB_ID:139}
+  timezone: Europe/Zagreb
+  max-reservation-span-days: 7
+  reservation-version: "20250422"
+  booking:
+    # How the midnight burst behaves.
+    lead-ms: 500            # start firing this many ms BEFORE the target instant
+    interval-ms: 250        # gap between consecutive attempts in the burst
+    give-up-ms: 15000       # stop retrying this long AFTER the target instant
+    clock-sync-lead-seconds: 45   # measure the server-clock offset this long before target
+    pre-roll-seconds: 5     # wake the fire thread this long before it needs to spin
+
+logging:
+  level:
+    org.padel.booker: DEBUG

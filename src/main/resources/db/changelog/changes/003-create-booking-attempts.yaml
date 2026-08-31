@@ -1,0 +1,55 @@
+databaseChangeLog:
+  - changeSet:
+      id: 003-create-booking-attempts
+      author: padel-booker
+      changes:
+        - createTable:
+            tableName: booking_attempts
+            columns:
+              - column:
+                  name: id
+                  type: bigint
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: booking_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: attempt_no
+                  type: int
+              - column:
+                  name: attempt_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: request_body
+                  type: text
+              - column:
+                  name: http_status
+                  type: int
+              - column:
+                  name: response_body
+                  type: text
+              - column:
+                  name: outcome
+                  type: varchar(30)
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: booking_attempts
+            indexName: idx_booking_attempts_booking
+            columns:
+              - column:
+                  name: booking_id
+        - addForeignKeyConstraint:
+            baseTableName: booking_attempts
+            baseColumnNames: booking_id
+            referencedTableName: queued_bookings
+            referencedColumnNames: id
+            constraintName: fk_attempt_booking
+            onDelete: CASCADE

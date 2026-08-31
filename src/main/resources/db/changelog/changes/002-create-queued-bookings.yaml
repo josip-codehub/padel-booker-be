@@ -1,0 +1,76 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002-create-queued-bookings
+      author: padel-booker
+      changes:
+        - createTable:
+            tableName: queued_bookings
+            columns:
+              - column:
+                  name: id
+                  type: bigint
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: court_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: court_name
+                  type: varchar(255)
+              - column:
+                  name: play_date
+                  type: date
+                  constraints:
+                    nullable: false
+              - column:
+                  name: slot_time
+                  type: int
+                  constraints:
+                    nullable: false
+              - column:
+                  name: slot_time_fmt
+                  type: varchar(5)
+              - column:
+                  name: price
+                  type: numeric(10,2)
+              - column:
+                  name: players_json
+                  type: text
+                  constraints:
+                    nullable: false
+              - column:
+                  name: target_fire_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_reservation_id
+                  type: bigint
+              - column:
+                  name: note
+                  type: varchar(500)
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: queued_bookings
+            indexName: idx_queued_bookings_status
+            columns:
+              - column:
+                  name: status
