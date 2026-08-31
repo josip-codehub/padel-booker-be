@@ -18,7 +18,10 @@ public class RestClientConfig {
     private static SimpleClientHttpRequestFactory requestFactory() {
         SimpleClientHttpRequestFactory f = new SimpleClientHttpRequestFactory();
         f.setConnectTimeout(Duration.ofSeconds(5));
-        f.setReadTimeout(Duration.ofSeconds(10));
+        // The upstream reservation list is slow (heavy embedded payload, ~7-25s for a club week),
+        // so give reads plenty of headroom. Note: the midnight burst uses createReservation, whose
+        // responses are tiny and fast; this generous read timeout does not slow the burst.
+        f.setReadTimeout(Duration.ofSeconds(60));
         return f;
     }
 

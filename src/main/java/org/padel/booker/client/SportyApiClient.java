@@ -1,6 +1,8 @@
 package org.padel.booker.client;
 
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.JsonNodeFactory;
 import org.padel.booker.auth.AuthService;
 import org.padel.booker.config.SportyProperties;
 import org.slf4j.Logger;
@@ -62,22 +64,43 @@ public class SportyApiClient {
                 .body(JsonNode.class));
     }
 
-    /** All reservations in the club between two dates (inclusive), optionally one court. */
+    /**
+     * All reservations in the club between two dates (inclusive), optionally one court.
+     * The upstream paginates (default ~15/page) with no stable default ordering, so we raise the
+     * page size and still loop every page, accumulating into one array. Returns an array of
+     * reservation items (already unwrapped from the {data,...} envelope).
+     */
     public JsonNode getReservations(LocalDate from, LocalDate to, Long courtId) {
-        return withAuthRetry(token -> api.get()
-                .uri(b -> {
-                    b.path("/reservation")
-                            .queryParam("filter[club]", props.getClubId())
-                            .queryParam("filter[from]", from.toString())
-                            .queryParam("filter[to]", to.toString());
-                    if (courtId != null) {
-                        b.queryParam("filter[court]", courtId);
-                    }
-                    return b.build();
-                })
-                .header(HttpHeaders.AUTHORIZATION, bearer(token))
-                .retrieve()
-                .body(JsonNode.class));
+        ArrayNode all = JsonNodeFactory.instance.arrayNode();
+        int page = 1;
+        int lastPage;
+        do {
+            final int p = page;
+            JsonNode resp = withAuthRetry(token -> api.get()
+                    .uri(b -> {
+                        b.path("/reservation")
+                                .queryParam("filter[club]", props.getClubId())
+                                .queryParam("filter[from]", from.toString())
+                                .queryParam("filter[to]", to.toString())
+                                .queryParam("limit", 1000)
+                                .queryParam("page", p);
+                        if (courtId != null) {
+                            b.queryParam("filter[court]", courtId);
+                        }
+                        return b.build();
+                    })
+                    .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                    .retrieve()
+                    .body(JsonNode.class));
+            if (resp == null) break;
+            JsonNode data = resp.has("data") ? resp.get("data") : resp;
+            if (data.isArray()) {
+                data.forEach(all::add);
+            }
+            lastPage = resp.path("meta").path("last_page").asInt(1);
+            page++;
+        } while (page <= lastPage && page <= 50); // hard guard against runaway paging
+        return all;
     }
 
     /** POST /reservation/price — returns {"<playerId>": price}. */
