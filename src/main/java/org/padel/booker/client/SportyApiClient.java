@@ -13,6 +13,7 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.ResourceAccessException;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -186,12 +187,40 @@ public class SportyApiClient {
         return offset;
     }
 
+    private static final int MAX_IO_RETRIES = 2;
+    private static final long IO_RETRY_BACKOFF_MS = 600;
+
+    /**
+     * Runs a read call with two safety nets: refresh-and-retry once on 401, and retry a few times on
+     * transient I/O errors (the upstream is flaky under load). Only used for idempotent reads — the
+     * create-reservation call is intentionally NOT retried, since a timed-out create may have
+     * actually succeeded server-side.
+     */
     private <T> T withAuthRetry(Function<String, T> call) {
+        int ioAttempts = 0;
+        while (true) {
+            try {
+                return call.apply(auth.getToken());
+            } catch (HttpClientErrorException.Unauthorized e) {
+                log.info("Got 401, refreshing token and retrying once");
+                return call.apply(auth.refreshToken());
+            } catch (ResourceAccessException e) {
+                ioAttempts++;
+                if (ioAttempts > MAX_IO_RETRIES) {
+                    log.warn("I/O error after {} retries, giving up: {}", MAX_IO_RETRIES, e.getMessage());
+                    throw e;
+                }
+                log.warn("Transient I/O error ({}), retry {}/{}", e.getMessage(), ioAttempts, MAX_IO_RETRIES);
+                sleep(IO_RETRY_BACKOFF_MS);
+            }
+        }
+    }
+
+    private static void sleep(long ms) {
         try {
-            return call.apply(auth.getToken());
-        } catch (HttpClientErrorException.Unauthorized e) {
-            log.info("Got 401, refreshing token and retrying once");
-            return call.apply(auth.refreshToken());
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
