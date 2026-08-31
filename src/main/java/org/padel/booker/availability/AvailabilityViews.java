@@ -9,10 +9,12 @@ public final class AvailabilityViews {
     private AvailabilityViews() {}
 
     public record Slot(
-            int time,          // HHMM, e.g. 700, 1430
+            int time,          // decimal-hours x100, e.g. 700, 1450
             String timeFmt,    // "07:00"
             boolean booked,
-            BigDecimal price   // best-effort (min matching rule); authoritative price fetched at queue time
+            boolean mine,      // booked by the logged-in player
+            boolean queued,    // a future slot already scheduled in our Queue (PENDING)
+            BigDecimal price   // null when booked
     ) {}
 
     public record CourtDay(String date, List<Slot> slots) {}

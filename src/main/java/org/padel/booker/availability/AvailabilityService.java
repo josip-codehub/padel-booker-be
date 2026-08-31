@@ -1,19 +1,29 @@
 package org.padel.booker.availability;
 
 import org.padel.booker.client.SportyApiClient;
+import org.padel.booker.domain.BookingStatus;
+import org.padel.booker.domain.QueuedBooking;
+import org.padel.booker.mine.MyReservationView;
+import org.padel.booker.mine.MyReservationsService;
+import org.padel.booker.repo.QueuedBookingRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
  * Builds the week availability grid from the upstream's server-precomputed {@code parsed_reservations}
- * (one live call, all courts, whole week). Nothing is cached — every request re-fetches.
+ * (one live call, all courts, whole week), then overlays two personal markers: slots reserved by the
+ * logged-in player ({@code mine}) and future slots already scheduled in our Queue ({@code queued}).
  *
  * Slot time codes are decimal-hours x100: 700=07:00, 850=08:30, 1450=14:30, 2050=20:30, 2200=22:00.
  * A slot with {@code id == 0} is free (bookable) and carries a {@code price}; anything else is booked.
@@ -21,15 +31,25 @@ import java.util.TreeMap;
 @Service
 public class AvailabilityService {
 
-    private final SportyApiClient api;
+    private static final Logger log = LoggerFactory.getLogger(AvailabilityService.class);
 
-    public AvailabilityService(SportyApiClient api) {
+    private final SportyApiClient api;
+    private final QueuedBookingRepository queuedBookings;
+    private final MyReservationsService myReservations;
+
+    public AvailabilityService(SportyApiClient api, QueuedBookingRepository queuedBookings,
+                               MyReservationsService myReservations) {
         this.api = api;
+        this.queuedBookings = queuedBookings;
+        this.myReservations = myReservations;
     }
 
     public AvailabilityViews.Week getWeek(LocalDate from, LocalDate to) {
         JsonNode resp = api.getCourtsWithAvailability(from, to);
         JsonNode courts = resp.has("data") ? resp.get("data") : resp;
+
+        Set<String> queuedKeys = queuedKeys();
+        Set<String> mineKeys = mineKeys(from, to);
 
         List<AvailabilityViews.CourtWeek> courtWeeks = new ArrayList<>();
         for (JsonNode court : courts) {
@@ -41,24 +61,26 @@ public class AvailabilityService {
 
             List<AvailabilityViews.CourtDay> days = new ArrayList<>();
             for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
-                days.add(new AvailabilityViews.CourtDay(d.toString(), slotsForDay(parsed.path(d.toString()))));
+                days.add(new AvailabilityViews.CourtDay(
+                        d.toString(),
+                        slotsForDay(courtId, d, parsed.path(d.toString()), queuedKeys, mineKeys)));
             }
             courtWeeks.add(new AvailabilityViews.CourtWeek(courtId, name, type, duration, days));
         }
         return new AvailabilityViews.Week(from.toString(), to.toString(), courtWeeks);
     }
 
-    private List<AvailabilityViews.Slot> slotsForDay(JsonNode dayNode) {
+    private List<AvailabilityViews.Slot> slotsForDay(long courtId, LocalDate date, JsonNode dayNode,
+                                                     Set<String> queuedKeys, Set<String> mineKeys) {
         List<AvailabilityViews.Slot> slots = new ArrayList<>();
         if (dayNode == null || !dayNode.isObject()) return slots;
 
-        // Sort by numeric time code.
         TreeMap<Integer, JsonNode> byTime = new TreeMap<>();
         for (Map.Entry<String, JsonNode> e : dayNode.properties()) {
             JsonNode slot = e.getValue();
             int time = slot.path("time").asInt(parseIntOr(e.getKey(), -1));
             if (time < 0) continue;
-            if (slot.path("hidden").asBoolean(false)) continue; // blocked slot
+            if (slot.path("hidden").asBoolean(false)) continue;
             byTime.put(time, slot);
         }
 
@@ -66,17 +88,52 @@ public class AvailabilityService {
             int time = e.getKey();
             JsonNode slot = e.getValue();
             boolean booked = slot.path("id").asLong(0) != 0;
+            String fmt = fmt(time);
+            boolean mine = mineKeys.contains(key(courtId, date.toString(), fmt));
+            boolean queued = !booked && queuedKeys.contains(codeKey(courtId, date.toString(), time));
             BigDecimal price = (!booked && slot.hasNonNull("price")) ? slot.get("price").decimalValue() : null;
-            slots.add(new AvailabilityViews.Slot(time, fmt(time), booked, price));
+            slots.add(new AvailabilityViews.Slot(time, fmt, booked, mine, queued, price));
         }
         return slots;
     }
 
-    /** Decimal-hours x100 -> "HH:mm". 1450 -> "14:30", 700 -> "07:00". */
+    /** Keys for PENDING queued bookings: courtId|date|timeCode. */
+    private Set<String> queuedKeys() {
+        Set<String> keys = new HashSet<>();
+        for (QueuedBooking b : queuedBookings.findByStatusOrderByTargetFireAtAsc(BookingStatus.PENDING)) {
+            keys.add(codeKey(b.getCourtId(), b.getPlayDate().toString(), b.getSlotTime()));
+        }
+        return keys;
+    }
+
+    /** Keys for the player's own reservations in range: courtId|date|"HH:mm". Best-effort. */
+    private Set<String> mineKeys(LocalDate from, LocalDate to) {
+        Set<String> keys = new HashSet<>();
+        try {
+            for (MyReservationView r : myReservations.list(from)) {
+                if (r.date() == null) continue;
+                LocalDate d = LocalDate.parse(r.date());
+                if (d.isBefore(from) || d.isAfter(to)) continue;
+                keys.add(key(r.courtId(), r.date(), r.fromTime()));
+            }
+        } catch (RuntimeException e) {
+            log.warn("Could not load own reservations for grid overlay: {}", e.getMessage());
+        }
+        return keys;
+    }
+
     private static String fmt(int timeCode) {
         int hours = timeCode / 100;
-        int minutes = Math.round((timeCode % 100) * 0.6f); // .50 -> 30, .00 -> 0
+        int minutes = Math.round((timeCode % 100) * 0.6f);
         return String.format("%02d:%02d", hours, minutes);
+    }
+
+    private static String key(long courtId, String date, String timeFmt) {
+        return courtId + "|" + date + "|" + timeFmt;
+    }
+
+    private static String codeKey(long courtId, String date, int timeCode) {
+        return courtId + "|" + date + "|c" + timeCode;
     }
 
     private static int parseIntOr(String s, int fallback) {
