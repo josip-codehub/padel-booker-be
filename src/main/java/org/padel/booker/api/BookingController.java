@@ -3,6 +3,7 @@ package org.padel.booker.api;
 import jakarta.validation.Valid;
 import org.padel.booker.booking.BookingService;
 import org.padel.booker.booking.CreateBookingRequest;
+import org.padel.booker.booking.ReserveNowResult;
 import org.padel.booker.domain.BookingAttempt;
 import org.padel.booker.domain.QueuedBooking;
 import org.springframework.http.HttpStatus;
@@ -24,6 +25,12 @@ public class BookingController {
     @ResponseStatus(HttpStatus.CREATED)
     public QueuedBooking create(@Valid @RequestBody CreateBookingRequest req) {
         return service.queue(req);
+    }
+
+    /** Book immediately (for dates already inside the 1-week window). */
+    @PostMapping("/now")
+    public ReserveNowResult reserveNow(@Valid @RequestBody CreateBookingRequest req) {
+        return service.reserveNow(req);
     }
 
     @GetMapping

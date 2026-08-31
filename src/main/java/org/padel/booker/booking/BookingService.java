@@ -1,7 +1,10 @@
 package org.padel.booker.booking;
 
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
+import org.padel.booker.auth.AuthService;
+import org.padel.booker.client.ApiResponse;
 import org.padel.booker.client.SportyApiClient;
 import org.padel.booker.config.SportyProperties;
 import org.padel.booker.domain.BookingAttempt;
@@ -27,23 +30,95 @@ public class BookingService {
     private static final Logger log = LoggerFactory.getLogger(BookingService.class);
 
     private final SportyApiClient api;
+    private final AuthService auth;
     private final ReservationPayloadBuilder payloadBuilder;
     private final QueuedBookingRepository bookings;
     private final BookingAttemptRepository attempts;
     private final BookingScheduler scheduler;
     private final SportyProperties props;
+    private final ObjectMapper mapper;
     private final ZoneId zone;
 
-    public BookingService(SportyApiClient api, ReservationPayloadBuilder payloadBuilder,
+    public BookingService(SportyApiClient api, AuthService auth, ReservationPayloadBuilder payloadBuilder,
                           QueuedBookingRepository bookings, BookingAttemptRepository attempts,
-                          BookingScheduler scheduler, SportyProperties props) {
+                          BookingScheduler scheduler, SportyProperties props, ObjectMapper mapper) {
         this.api = api;
+        this.auth = auth;
         this.payloadBuilder = payloadBuilder;
         this.bookings = bookings;
         this.attempts = attempts;
         this.scheduler = scheduler;
         this.props = props;
+        this.mapper = mapper;
         this.zone = ZoneId.of(props.getTimezone());
+    }
+
+    /** True when the play date is already open for booking (within the reservation-span window). */
+    public boolean isWithinWindow(LocalDate playDate) {
+        LocalDate lastOpenDay = LocalDate.now(zone).plusDays(props.getMaxReservationSpanDays());
+        return !playDate.isAfter(lastOpenDay);
+    }
+
+    /**
+     * Book a slot immediately and synchronously (for dates already inside the booking window).
+     * Returns the outcome right away — no scheduling, no queue row.
+     */
+    public ReserveNowResult reserveNow(CreateBookingRequest req) {
+        if (req.playDate().isBefore(LocalDate.now(zone))) {
+            throw new IllegalArgumentException("Play date is in the past");
+        }
+        JsonNode me = api.me();
+        JsonNode team = me.path("user").path("team");
+        if (team.isMissingNode() || team.isNull() || !team.has("id")) {
+            throw new IllegalStateException("Could not resolve your team from /me");
+        }
+
+        ArrayNode players = payloadBuilder.playersArray(team);
+        String probeBody = payloadBuilder.buildBodyJson(
+                req.courtId(), req.playDate().toString(), req.slotTime(), BigDecimal.ZERO, players);
+        BigDecimal price = totalPrice(api.price(probeBody));
+        String body = payloadBuilder.buildBodyJson(
+                req.courtId(), req.playDate().toString(), req.slotTime(), price, players);
+
+        String token = auth.getToken();
+        ApiResponse resp = api.createReservation(body, token);
+        if (resp.status() == 401) {
+            token = auth.refreshToken();
+            resp = api.createReservation(body, token);
+        }
+
+        if (resp.isSuccess()) {
+            Long reservationId = parseReservationId(resp.body());
+            log.info("Immediate reservation: court {} {} {} -> reservation {}",
+                    req.courtId(), req.playDate(), formatSlot(req.slotTime()), reservationId);
+            return new ReserveNowResult(true, reservationId, price,
+                    reservationId != null ? "Reserved (reservation #" + reservationId + ")" : "Reserved");
+        }
+        String message = humanError(resp);
+        log.info("Immediate reservation failed ({}): {}", resp.status(), message);
+        return new ReserveNowResult(false, null, price, message);
+    }
+
+    private Long parseReservationId(String body) {
+        try {
+            JsonNode arr = mapper.readTree(body).path("reservations");
+            if (arr.isArray() && !arr.isEmpty()) return arr.get(0).asLong();
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private String humanError(ApiResponse resp) {
+        String b = resp.body() == null ? "" : resp.body();
+        if (resp.status() == 403 || b.contains("court_unavailable") || b.contains("unavailable")) {
+            return "Court is no longer available (already taken).";
+        }
+        try {
+            JsonNode msg = mapper.readTree(b).path("message");
+            if (!msg.isMissingNode() && !msg.isNull()) return msg.asText();
+        } catch (Exception ignored) {
+        }
+        return "Booking failed (HTTP " + resp.status() + ").";
     }
 
     public QueuedBooking queue(CreateBookingRequest req) {
