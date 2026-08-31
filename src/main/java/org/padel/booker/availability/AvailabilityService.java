@@ -92,7 +92,20 @@ public class AvailabilityService {
             boolean mine = mineKeys.contains(key(courtId, date.toString(), fmt));
             boolean queued = !booked && queuedKeys.contains(codeKey(courtId, date.toString(), time));
             BigDecimal price = (!booked && slot.hasNonNull("price")) ? slot.get("price").decimalValue() : null;
-            slots.add(new AvailabilityViews.Slot(time, fmt, booked, mine, queued, price));
+
+            String bookedBy = null;
+            List<AvailabilityViews.SlotPlayer> players = List.of();
+            if (booked) {
+                JsonNode by = slot.path("created_by");
+                bookedBy = by.path("display_name").asText(by.path("name").asText(null));
+                List<AvailabilityViews.SlotPlayer> ps = new ArrayList<>();
+                for (JsonNode p : slot.path("players")) {
+                    String pn = p.path("display_name").asText(null);
+                    if (pn != null) ps.add(new AvailabilityViews.SlotPlayer(pn, p.path("image").asText(null)));
+                }
+                players = ps;
+            }
+            slots.add(new AvailabilityViews.Slot(time, fmt, booked, mine, queued, price, bookedBy, players));
         }
         return slots;
     }

@@ -8,13 +8,17 @@ public final class AvailabilityViews {
 
     private AvailabilityViews() {}
 
+    public record SlotPlayer(String name, String image) {}
+
     public record Slot(
             int time,          // decimal-hours x100, e.g. 700, 1450
             String timeFmt,    // "07:00"
             boolean booked,
             boolean mine,      // booked by the logged-in player
             boolean queued,    // a future slot already scheduled in our Queue (PENDING)
-            BigDecimal price   // null when booked
+            BigDecimal price,  // null when booked
+            String bookedBy,   // display name of who created the reservation (null when free)
+            List<SlotPlayer> players // participants on a booked slot (empty when free)
     ) {}
 
     public record CourtDay(String date, List<Slot> slots) {}
