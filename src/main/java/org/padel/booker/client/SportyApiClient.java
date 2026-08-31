@@ -52,6 +52,43 @@ public class SportyApiClient {
                 .body(JsonNode.class));
     }
 
+    /** The logged-in player's id (from /me). */
+    public long currentPlayerId() {
+        return me().path("user").path("id").asLong();
+    }
+
+    /**
+     * A player's own reservations from a given date onward (upcoming bookings), across all pages.
+     * Returns an array of reservation items (unwrapped from the {data,...} envelope).
+     */
+    public JsonNode getPlayerReservations(long playerId, LocalDate from) {
+        ArrayNode all = JsonNodeFactory.instance.arrayNode();
+        int page = 1;
+        int lastPage;
+        do {
+            final int p = page;
+            JsonNode resp = withAuthRetry(token -> api.get()
+                    .uri(b -> b.path("/reservation")
+                            .queryParam("filter[player]", playerId)
+                            .queryParam("filter[from]", from.toString())
+                            .queryParam("with_reservation_lengths", true)
+                            .queryParam("limit", 1000)
+                            .queryParam("page", p)
+                            .build())
+                    .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                    .retrieve()
+                    .body(JsonNode.class));
+            if (resp == null) break;
+            JsonNode data = resp.has("data") ? resp.get("data") : resp;
+            if (data.isArray()) {
+                data.forEach(all::add);
+            }
+            lastPage = resp.path("meta").path("last_page").asInt(1);
+            page++;
+        } while (page <= lastPage && page <= 50);
+        return all;
+    }
+
     /** Active courts for the configured club, including working_hours. */
     public JsonNode getCourts() {
         return withAuthRetry(token -> api.get()
