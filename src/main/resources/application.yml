@@ -28,11 +28,11 @@ sporty:
   reservation-version: "20250422"
   booking:
     # How the midnight burst behaves.
-    lead-ms: 500            # start firing this many ms BEFORE the target instant
-    interval-ms: 250        # gap between consecutive attempts in the burst
-    give-up-ms: 15000       # stop retrying this long AFTER the target instant
+    first-attempt-after-ms: 200   # fire the FIRST attempt this many ms AFTER the server's midnight
+    interval-ms: 250              # gap between consecutive attempts in the burst
+    give-up-ms: 15000            # stop retrying this long AFTER the target instant
     clock-sync-lead-seconds: 45   # measure the server-clock offset this long before target
-    pre-roll-seconds: 5     # wake the fire thread this long before it needs to spin
+    pre-roll-seconds: 5          # wake the fire thread this long before it needs to spin
 
 logging:
   level:

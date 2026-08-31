@@ -23,14 +23,19 @@ public class SportyProperties {
     private Booking booking = new Booking();
 
     public static class Booking {
-        private long leadMs = 500;
+        /**
+         * When to fire the FIRST attempt relative to the server's midnight, in ms.
+         * Positive = a bit AFTER midnight (so the slot is already open on the first try).
+         * Negative = before midnight (bursting across the boundary).
+         */
+        private long firstAttemptAfterMs = 200;
         private long intervalMs = 250;
         private long giveUpMs = 15000;
         private int clockSyncLeadSeconds = 45;
         private int preRollSeconds = 5;
 
-        public long getLeadMs() { return leadMs; }
-        public void setLeadMs(long leadMs) { this.leadMs = leadMs; }
+        public long getFirstAttemptAfterMs() { return firstAttemptAfterMs; }
+        public void setFirstAttemptAfterMs(long v) { this.firstAttemptAfterMs = v; }
         public long getIntervalMs() { return intervalMs; }
         public void setIntervalMs(long intervalMs) { this.intervalMs = intervalMs; }
         public long getGiveUpMs() { return giveUpMs; }

@@ -73,7 +73,8 @@ public class BookingExecutor {
 
         long offset = safeOffset();
         long target = booking.getTargetFireAt().toEpochMilli();
-        long fireStartLocal = target - props.getBooking().getLeadMs() - offset;
+        // Fire the first attempt firstAttemptAfterMs after the server's midnight (offset = serverMs - localMs).
+        long fireStartLocal = target + props.getBooking().getFirstAttemptAfterMs() - offset;
         long giveUpLocal = target + props.getBooking().getGiveUpMs() - offset;
 
         waitUntil(fireStartLocal);
