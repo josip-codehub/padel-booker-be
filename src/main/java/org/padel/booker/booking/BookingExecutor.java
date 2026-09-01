@@ -2,7 +2,8 @@ package org.padel.booker.booking;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
-import org.padel.booker.auth.AuthService;
+import org.padel.booker.auth.SportyAccountService;
+import org.padel.booker.auth.UserContext;
 import org.padel.booker.client.ApiResponse;
 import org.padel.booker.client.SportyApiClient;
 import org.padel.booker.config.SportyProperties;
@@ -28,18 +29,18 @@ public class BookingExecutor {
     private static final int MAX_ATTEMPTS = 250;
 
     private final SportyApiClient api;
-    private final AuthService auth;
+    private final SportyAccountService accounts;
     private final ReservationPayloadBuilder payloadBuilder;
     private final QueuedBookingRepository bookings;
     private final BookingAttemptRepository attempts;
     private final SportyProperties props;
     private final ObjectMapper mapper;
 
-    public BookingExecutor(SportyApiClient api, AuthService auth, ReservationPayloadBuilder payloadBuilder,
+    public BookingExecutor(SportyApiClient api, SportyAccountService accounts, ReservationPayloadBuilder payloadBuilder,
                            QueuedBookingRepository bookings, BookingAttemptRepository attempts,
                            SportyProperties props, ObjectMapper mapper) {
         this.api = api;
-        this.auth = auth;
+        this.accounts = accounts;
         this.payloadBuilder = payloadBuilder;
         this.bookings = bookings;
         this.attempts = attempts;
@@ -58,70 +59,81 @@ public class BookingExecutor {
             return;
         }
 
-        booking.setStatus(BookingStatus.RUNNING);
-        bookings.save(booking);
-        log.info("Firing booking {} (court {}, {} {}) target={}", bookingId,
-                booking.getCourtId(), booking.getPlayDate(), booking.getSlotTimeFmt(), booking.getTargetFireAt());
-
-        String body;
-        try {
-            body = payloadBuilder.buildBodyJson(booking);
-        } catch (RuntimeException e) {
-            fail(booking, "Could not build request body: " + e.getMessage());
+        Long userId = booking.getUserId();
+        if (userId == null) {
+            fail(booking, "Booking has no owner; cannot fire");
             return;
         }
 
-        long offset = safeOffset();
-        long target = booking.getTargetFireAt().toEpochMilli();
-        // Fire the first attempt firstAttemptAfterMs after the server's midnight (offset = serverMs - localMs).
-        long fireStartLocal = target + props.getBooking().getFirstAttemptAfterMs() - offset;
-        long giveUpLocal = target + props.getBooking().getGiveUpMs() - offset;
+        booking.setStatus(BookingStatus.RUNNING);
+        bookings.save(booking);
+        log.info("Firing booking {} (user {}, court {}, {} {}) target={}", bookingId, userId,
+                booking.getCourtId(), booking.getPlayDate(), booking.getSlotTimeFmt(), booking.getTargetFireAt());
 
-        waitUntil(fireStartLocal);
-
-        String token = auth.getToken();
-        int attemptNo = 0;
-        boolean won = false;
-
-        while (System.currentTimeMillis() <= giveUpLocal && attemptNo < MAX_ATTEMPTS) {
-            attemptNo++;
-            ApiResponse resp;
+        UserContext.set(userId);
+        try {
+            String body;
             try {
-                resp = api.createReservation(body, token);
+                body = payloadBuilder.buildBodyJson(booking);
             } catch (RuntimeException e) {
-                record(booking, attemptNo, body, null, "exception: " + e.getMessage(), AttemptOutcome.ERROR);
-                sleep(props.getBooking().getIntervalMs());
-                continue;
+                fail(booking, "Could not build request body: " + e.getMessage());
+                return;
             }
 
-            AttemptOutcome outcome = classify(resp);
-            record(booking, attemptNo, body, resp.status(), resp.body(), outcome);
+            long offset = safeOffset();
+            long target = booking.getTargetFireAt().toEpochMilli();
+            // Fire the first attempt firstAttemptAfterMs after the server's midnight (offset = serverMs - localMs).
+            long fireStartLocal = target + props.getBooking().getFirstAttemptAfterMs() - offset;
+            long giveUpLocal = target + props.getBooking().getGiveUpMs() - offset;
 
-            if (outcome == AttemptOutcome.SUCCESS) {
-                Long reservationId = parseReservationId(resp.body());
-                booking.setStatus(BookingStatus.SUCCEEDED);
-                booking.setCreatedReservationId(reservationId);
-                booking.setNote("Reserved after " + attemptNo + " attempt(s), reservation " + reservationId);
-                bookings.save(booking);
-                log.info("Booking {} SUCCEEDED on attempt {} -> reservation {}", bookingId, attemptNo, reservationId);
-                won = true;
-                break;
-            } else if (outcome == AttemptOutcome.AUTH_FAILED) {
-                log.warn("Booking {} got auth failure on attempt {}, refreshing token", bookingId, attemptNo);
+            waitUntil(fireStartLocal);
+
+            String token = accounts.getToken(userId);
+            int attemptNo = 0;
+            boolean won = false;
+
+            while (System.currentTimeMillis() <= giveUpLocal && attemptNo < MAX_ATTEMPTS) {
+                attemptNo++;
+                ApiResponse resp;
                 try {
-                    token = auth.refreshToken();
+                    resp = api.createReservation(body, token);
                 } catch (RuntimeException e) {
-                    log.error("Token refresh failed mid-burst: {}", e.getMessage());
+                    record(booking, attemptNo, body, null, "exception: " + e.getMessage(), AttemptOutcome.ERROR);
+                    sleep(props.getBooking().getIntervalMs());
+                    continue;
                 }
-                // retry immediately, no sleep
-            } else {
-                sleep(props.getBooking().getIntervalMs());
-            }
-        }
 
-        if (!won) {
-            fail(booking, "Slot not secured after " + attemptNo + " attempt(s) within the give-up window");
-            log.info("Booking {} FAILED after {} attempts", bookingId, attemptNo);
+                AttemptOutcome outcome = classify(resp);
+                record(booking, attemptNo, body, resp.status(), resp.body(), outcome);
+
+                if (outcome == AttemptOutcome.SUCCESS) {
+                    Long reservationId = parseReservationId(resp.body());
+                    booking.setStatus(BookingStatus.SUCCEEDED);
+                    booking.setCreatedReservationId(reservationId);
+                    booking.setNote("Reserved after " + attemptNo + " attempt(s), reservation " + reservationId);
+                    bookings.save(booking);
+                    log.info("Booking {} SUCCEEDED on attempt {} -> reservation {}", bookingId, attemptNo, reservationId);
+                    won = true;
+                    break;
+                } else if (outcome == AttemptOutcome.AUTH_FAILED) {
+                    log.warn("Booking {} got auth failure on attempt {}, refreshing token", bookingId, attemptNo);
+                    try {
+                        token = accounts.refreshToken(userId);
+                    } catch (RuntimeException e) {
+                        log.error("Token refresh failed mid-burst: {}", e.getMessage());
+                    }
+                    // retry immediately, no sleep
+                } else {
+                    sleep(props.getBooking().getIntervalMs());
+                }
+            }
+
+            if (!won) {
+                fail(booking, "Slot not secured after " + attemptNo + " attempt(s) within the give-up window");
+                log.info("Booking {} FAILED after {} attempts", bookingId, attemptNo);
+            }
+        } finally {
+            UserContext.clear();
         }
     }
 

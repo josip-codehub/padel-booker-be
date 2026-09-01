@@ -24,6 +24,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
     implementation("org.springframework.boot:spring-boot-starter-validation")
+    implementation("org.springframework.security:spring-security-crypto") // BCrypt only, no filter chain
     // Spring Boot 4 modularized autoconfig: Liquibase support lives in its own module,
     // which the JPA/web starters do NOT pull in. Without it Liquibase silently never runs.
     implementation("org.springframework.boot:spring-boot-liquibase")

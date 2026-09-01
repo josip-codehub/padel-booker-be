@@ -14,8 +14,10 @@ public final class AvailabilityViews {
             int time,          // decimal-hours x100, e.g. 700, 1450
             String timeFmt,    // "07:00"
             boolean booked,
-            boolean mine,      // booked by the logged-in player
-            boolean queued,    // a future slot already scheduled in our Queue (PENDING)
+            boolean mine,      // booked by the logged-in player (on Sporty)
+            boolean queued,    // a future slot already scheduled in our Queue (PENDING, any app user)
+            boolean queuedByMe,// the queued slot is mine
+            String queuedBy,   // app username who scheduled it (null if not queued)
             BigDecimal price,  // null when booked
             String bookedBy,   // display name of who created the reservation (null when free)
             List<SlotPlayer> players // participants on a booked slot (empty when free)

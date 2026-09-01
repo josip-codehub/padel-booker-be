@@ -1,0 +1,48 @@
+databaseChangeLog:
+  - changeSet:
+      id: 005-add-user-id-credentials
+      author: padel-booker
+      changes:
+        - addColumn:
+            tableName: credentials
+            columns:
+              - column:
+                  name: user_id
+                  type: bigint
+        - addForeignKeyConstraint:
+            baseTableName: credentials
+            baseColumnNames: user_id
+            referencedTableName: app_users
+            referencedColumnNames: id
+            constraintName: fk_credentials_user
+            onDelete: CASCADE
+        - createIndex:
+            tableName: credentials
+            indexName: idx_credentials_user
+            unique: true
+            columns:
+              - column:
+                  name: user_id
+  - changeSet:
+      id: 005-add-user-id-queued-bookings
+      author: padel-booker
+      changes:
+        - addColumn:
+            tableName: queued_bookings
+            columns:
+              - column:
+                  name: user_id
+                  type: bigint
+        - addForeignKeyConstraint:
+            baseTableName: queued_bookings
+            baseColumnNames: user_id
+            referencedTableName: app_users
+            referencedColumnNames: id
+            constraintName: fk_queued_bookings_user
+            onDelete: CASCADE
+        - createIndex:
+            tableName: queued_bookings
+            indexName: idx_queued_bookings_user
+            columns:
+              - column:
+                  name: user_id

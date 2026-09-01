@@ -15,6 +15,10 @@ public class Credential {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /** The app user this Sporty Plus account belongs to. */
+    @Column(name = "user_id")
+    private Long userId;
+
     private String email;
     private String password;
 
@@ -41,6 +45,8 @@ public class Credential {
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
+    public Long getUserId() { return userId; }
+    public void setUserId(Long userId) { this.userId = userId; }
     public String getEmail() { return email; }
     public void setEmail(String email) { this.email = email; }
     public String getPassword() { return password; }

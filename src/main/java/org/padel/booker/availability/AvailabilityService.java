@@ -1,10 +1,13 @@
 package org.padel.booker.availability;
 
+import org.padel.booker.auth.UserContext;
 import org.padel.booker.client.SportyApiClient;
+import org.padel.booker.domain.AppUser;
 import org.padel.booker.domain.BookingStatus;
 import org.padel.booker.domain.QueuedBooking;
 import org.padel.booker.mine.MyReservationView;
 import org.padel.booker.mine.MyReservationsService;
+import org.padel.booker.repo.AppUserRepository;
 import org.padel.booker.repo.QueuedBookingRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,6 +17,7 @@ import tools.jackson.databind.JsonNode;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -22,11 +26,11 @@ import java.util.TreeMap;
 
 /**
  * Builds the week availability grid from the upstream's server-precomputed {@code parsed_reservations}
- * (one live call, all courts, whole week), then overlays two personal markers: slots reserved by the
- * logged-in player ({@code mine}) and future slots already scheduled in our Queue ({@code queued}).
+ * (one live call, all courts, whole week), then overlays: slots reserved by the logged-in player on
+ * Sporty ({@code mine}) and future slots scheduled in our Queue by any app user ({@code queued}, with
+ * the scheduler's username so others can see who took it and can't double-schedule).
  *
  * Slot time codes are decimal-hours x100: 700=07:00, 850=08:30, 1450=14:30, 2050=20:30, 2200=22:00.
- * A slot with {@code id == 0} is free (bookable) and carries a {@code price}; anything else is booked.
  */
 @Service
 public class AvailabilityService {
@@ -36,19 +40,24 @@ public class AvailabilityService {
     private final SportyApiClient api;
     private final QueuedBookingRepository queuedBookings;
     private final MyReservationsService myReservations;
+    private final AppUserRepository users;
 
     public AvailabilityService(SportyApiClient api, QueuedBookingRepository queuedBookings,
-                               MyReservationsService myReservations) {
+                               MyReservationsService myReservations, AppUserRepository users) {
         this.api = api;
         this.queuedBookings = queuedBookings;
         this.myReservations = myReservations;
+        this.users = users;
     }
 
+    private record QueuedInfo(Long userId, String username) {}
+
     public AvailabilityViews.Week getWeek(LocalDate from, LocalDate to) {
+        long currentUserId = UserContext.require();
         JsonNode resp = api.getCourtsWithAvailability(from, to);
         JsonNode courts = resp.has("data") ? resp.get("data") : resp;
 
-        Set<String> queuedKeys = queuedKeys();
+        Map<String, QueuedInfo> queued = queuedMap();
         Set<String> mineKeys = mineKeys(from, to);
 
         List<AvailabilityViews.CourtWeek> courtWeeks = new ArrayList<>();
@@ -63,7 +72,7 @@ public class AvailabilityService {
             for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
                 days.add(new AvailabilityViews.CourtDay(
                         d.toString(),
-                        slotsForDay(courtId, d, parsed.path(d.toString()), queuedKeys, mineKeys)));
+                        slotsForDay(courtId, d, parsed.path(d.toString()), queued, mineKeys, currentUserId)));
             }
             courtWeeks.add(new AvailabilityViews.CourtWeek(courtId, name, type, duration, days));
         }
@@ -71,7 +80,8 @@ public class AvailabilityService {
     }
 
     private List<AvailabilityViews.Slot> slotsForDay(long courtId, LocalDate date, JsonNode dayNode,
-                                                     Set<String> queuedKeys, Set<String> mineKeys) {
+                                                     Map<String, QueuedInfo> queued, Set<String> mineKeys,
+                                                     long currentUserId) {
         List<AvailabilityViews.Slot> slots = new ArrayList<>();
         if (dayNode == null || !dayNode.isObject()) return slots;
 
@@ -90,7 +100,12 @@ public class AvailabilityService {
             boolean booked = slot.path("id").asLong(0) != 0;
             String fmt = fmt(time);
             boolean mine = mineKeys.contains(key(courtId, date.toString(), fmt));
-            boolean queued = !booked && queuedKeys.contains(codeKey(courtId, date.toString(), time));
+
+            QueuedInfo qi = booked ? null : queued.get(codeKey(courtId, date.toString(), time));
+            boolean isQueued = qi != null;
+            boolean queuedByMe = qi != null && qi.userId() != null && qi.userId() == currentUserId;
+            String queuedBy = qi != null ? qi.username() : null;
+
             BigDecimal price = (!booked && slot.hasNonNull("price")) ? slot.get("price").decimalValue() : null;
 
             String bookedBy = null;
@@ -105,21 +120,27 @@ public class AvailabilityService {
                 }
                 players = ps;
             }
-            slots.add(new AvailabilityViews.Slot(time, fmt, booked, mine, queued, price, bookedBy, players));
+            slots.add(new AvailabilityViews.Slot(time, fmt, booked, mine, isQueued, queuedByMe, queuedBy,
+                    price, bookedBy, players));
         }
         return slots;
     }
 
-    /** Keys for PENDING queued bookings: courtId|date|timeCode. */
-    private Set<String> queuedKeys() {
-        Set<String> keys = new HashSet<>();
+    /** Map of PENDING queued slots -> who scheduled them (courtId|date|timeCode -> QueuedInfo). */
+    private Map<String, QueuedInfo> queuedMap() {
+        Map<Long, String> usernames = new HashMap<>();
+        for (AppUser u : users.findAll()) usernames.put(u.getId(), u.getUsername());
+
+        Map<String, QueuedInfo> map = new HashMap<>();
         for (QueuedBooking b : queuedBookings.findByStatusOrderByTargetFireAtAsc(BookingStatus.PENDING)) {
-            keys.add(codeKey(b.getCourtId(), b.getPlayDate().toString(), b.getSlotTime()));
+            String uname = b.getUserId() != null ? usernames.getOrDefault(b.getUserId(), "someone") : "someone";
+            map.put(codeKey(b.getCourtId(), b.getPlayDate().toString(), b.getSlotTime()),
+                    new QueuedInfo(b.getUserId(), uname));
         }
-        return keys;
+        return map;
     }
 
-    /** Keys for the player's own reservations in range: courtId|date|"HH:mm". Best-effort. */
+    /** Keys for the current player's own Sporty reservations in range: courtId|date|"HH:mm". Best-effort. */
     private Set<String> mineKeys(LocalDate from, LocalDate to) {
         Set<String> keys = new HashSet<>();
         try {

@@ -1,6 +1,7 @@
 package org.padel.booker.auth;
 
 import org.padel.booker.config.AppAuthProperties;
+import org.padel.booker.domain.Role;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -14,8 +15,8 @@ import java.util.Base64;
 import java.util.Optional;
 
 /**
- * Issues and verifies stateless HMAC-signed session tokens for the app login.
- * Token format: base64url(payload) + "." + base64url(hmacSha256(payload)), payload = "username|expiryMillis".
+ * Stateless HMAC-signed session tokens. Payload = "userId|ROLE|expiryMillis".
+ * Format: base64url(payload) + "." + base64url(hmacSha256(payload)).
  */
 @Service
 public class AppTokenService {
@@ -32,18 +33,18 @@ public class AppTokenService {
             byte[] rnd = new byte[32];
             new SecureRandom().nextBytes(rnd);
             s = Base64.getEncoder().encodeToString(rnd);
-            log.warn("app.auth.secret not set — generated an ephemeral secret; issued tokens will be invalidated on restart. Set APP_AUTH_SECRET to persist logins.");
+            log.warn("app.auth.secret not set — generated an ephemeral secret; tokens invalidate on restart. Set APP_AUTH_SECRET to persist logins.");
         }
         this.secret = s.getBytes(StandardCharsets.UTF_8);
     }
 
-    public String create(String username, long ttlMillis) {
+    public String create(long userId, Role role, long ttlMillis) {
         long expiry = System.currentTimeMillis() + ttlMillis;
-        String payload = B64.encodeToString((username + "|" + expiry).getBytes(StandardCharsets.UTF_8));
+        String payload = B64.encodeToString((userId + "|" + role.name() + "|" + expiry).getBytes(StandardCharsets.UTF_8));
         return payload + "." + B64.encodeToString(hmac(payload));
     }
 
-    public Optional<String> verify(String token) {
+    public Optional<TokenPrincipal> verify(String token) {
         if (token == null) return Optional.empty();
         int dot = token.indexOf('.');
         if (dot <= 0) return Optional.empty();
@@ -52,11 +53,11 @@ public class AppTokenService {
         try {
             if (!MessageDigest.isEqual(B64D.decode(sig), hmac(payload))) return Optional.empty();
             String decoded = new String(B64D.decode(payload), StandardCharsets.UTF_8);
-            int bar = decoded.lastIndexOf('|');
-            if (bar <= 0) return Optional.empty();
-            long expiry = Long.parseLong(decoded.substring(bar + 1));
+            String[] parts = decoded.split("\\|");
+            if (parts.length != 3) return Optional.empty();
+            long expiry = Long.parseLong(parts[2]);
             if (System.currentTimeMillis() > expiry) return Optional.empty();
-            return Optional.of(decoded.substring(0, bar));
+            return Optional.of(new TokenPrincipal(Long.parseLong(parts[0]), Role.valueOf(parts[1])));
         } catch (RuntimeException e) {
             return Optional.empty();
         }

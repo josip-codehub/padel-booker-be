@@ -3,7 +3,8 @@ package org.padel.booker.client;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.JsonNodeFactory;
-import org.padel.booker.auth.AuthService;
+import org.padel.booker.auth.SportyAccountService;
+import org.padel.booker.auth.UserContext;
 import org.padel.booker.config.SportyProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,14 +34,14 @@ public class SportyApiClient {
     private static final Logger log = LoggerFactory.getLogger(SportyApiClient.class);
 
     private final RestClient api;
-    private final AuthService auth;
+    private final SportyAccountService accounts;
     private final SportyProperties props;
 
     public SportyApiClient(@Qualifier("apiRestClient") RestClient api,
-                           AuthService auth,
+                           SportyAccountService accounts,
                            SportyProperties props) {
         this.api = api;
-        this.auth = auth;
+        this.accounts = accounts;
         this.props = props;
     }
 
@@ -163,7 +164,7 @@ public class SportyApiClient {
      * Uses the Date response header; corrected for round-trip midpoint.
      */
     public long measureServerOffsetMillis() {
-        String token = auth.getToken();
+        String token = accounts.getToken(UserContext.require());
         long t0 = System.currentTimeMillis();
         Instant[] serverInstant = new Instant[1];
         api.get()
@@ -197,13 +198,14 @@ public class SportyApiClient {
      * actually succeeded server-side.
      */
     private <T> T withAuthRetry(Function<String, T> call) {
+        long userId = UserContext.require();
         int ioAttempts = 0;
         while (true) {
             try {
-                return call.apply(auth.getToken());
+                return call.apply(accounts.getToken(userId));
             } catch (HttpClientErrorException.Unauthorized e) {
-                log.info("Got 401, refreshing token and retrying once");
-                return call.apply(auth.refreshToken());
+                log.info("Got 401 for user {}, refreshing token and retrying once", userId);
+                return call.apply(accounts.refreshToken(userId));
             } catch (ResourceAccessException e) {
                 ioAttempts++;
                 if (ioAttempts > MAX_IO_RETRIES) {

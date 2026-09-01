@@ -5,3 +5,7 @@ databaseChangeLog:
       file: db/changelog/changes/002-create-queued-bookings.yaml
   - include:
       file: db/changelog/changes/003-create-booking-attempts.yaml
+  - include:
+      file: db/changelog/changes/004-create-app-users.yaml
+  - include:
+      file: db/changelog/changes/005-add-user-ownership.yaml

@@ -13,6 +13,10 @@ public class QueuedBooking {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /** The app user who scheduled this booking. */
+    @Column(name = "user_id")
+    private Long userId;
+
     @Column(nullable = false)
     private Long courtId;
 
@@ -65,6 +69,8 @@ public class QueuedBooking {
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
+    public Long getUserId() { return userId; }
+    public void setUserId(Long userId) { this.userId = userId; }
     public Long getCourtId() { return courtId; }
     public void setCourtId(Long v) { this.courtId = v; }
     public String getCourtName() { return courtName; }

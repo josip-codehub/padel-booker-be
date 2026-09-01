@@ -3,13 +3,15 @@ package org.padel.booker.booking;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
-import org.padel.booker.auth.AuthService;
+import org.padel.booker.auth.SportyAccountService;
+import org.padel.booker.auth.UserContext;
 import org.padel.booker.client.ApiResponse;
 import org.padel.booker.client.SportyApiClient;
 import org.padel.booker.config.SportyProperties;
 import org.padel.booker.domain.BookingAttempt;
 import org.padel.booker.domain.BookingStatus;
 import org.padel.booker.domain.QueuedBooking;
+import org.padel.booker.repo.AppUserRepository;
 import org.padel.booker.repo.BookingAttemptRepository;
 import org.padel.booker.repo.QueuedBookingRepository;
 import org.slf4j.Logger;
@@ -20,7 +22,6 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -30,43 +31,82 @@ public class BookingService {
     private static final Logger log = LoggerFactory.getLogger(BookingService.class);
 
     private final SportyApiClient api;
-    private final AuthService auth;
+    private final SportyAccountService accounts;
     private final ReservationPayloadBuilder payloadBuilder;
     private final QueuedBookingRepository bookings;
     private final BookingAttemptRepository attempts;
     private final BookingScheduler scheduler;
     private final SportyProperties props;
     private final ObjectMapper mapper;
+    private final AppUserRepository users;
     private final ZoneId zone;
 
-    public BookingService(SportyApiClient api, AuthService auth, ReservationPayloadBuilder payloadBuilder,
+    public BookingService(SportyApiClient api, SportyAccountService accounts, ReservationPayloadBuilder payloadBuilder,
                           QueuedBookingRepository bookings, BookingAttemptRepository attempts,
-                          BookingScheduler scheduler, SportyProperties props, ObjectMapper mapper) {
+                          BookingScheduler scheduler, SportyProperties props, ObjectMapper mapper,
+                          AppUserRepository users) {
         this.api = api;
-        this.auth = auth;
+        this.accounts = accounts;
         this.payloadBuilder = payloadBuilder;
         this.bookings = bookings;
         this.attempts = attempts;
         this.scheduler = scheduler;
         this.props = props;
         this.mapper = mapper;
+        this.users = users;
         this.zone = ZoneId.of(props.getTimezone());
     }
 
-    /** True when the play date is already open for booking (within the reservation-span window). */
     public boolean isWithinWindow(LocalDate playDate) {
         LocalDate lastOpenDay = LocalDate.now(zone).plusDays(props.getMaxReservationSpanDays());
         return !playDate.isAfter(lastOpenDay);
     }
 
-    /**
-     * Book a slot immediately and synchronously (for dates already inside the booking window).
-     * Returns the outcome right away — no scheduling, no queue row.
-     */
-    public ReserveNowResult reserveNow(CreateBookingRequest req) {
+    public QueuedBooking queue(CreateBookingRequest req) {
+        long userId = UserContext.require();
         if (req.playDate().isBefore(LocalDate.now(zone))) {
             throw new IllegalArgumentException("Play date is in the past");
         }
+        ensureNotAlreadyScheduled(req.courtId(), req.playDate(), req.slotTime());
+
+        JsonNode me = api.me();
+        JsonNode team = me.path("user").path("team");
+        if (team.isMissingNode() || team.isNull() || !team.has("id")) {
+            throw new IllegalStateException("Could not resolve your team from /me");
+        }
+
+        ArrayNode players = payloadBuilder.playersArray(team);
+        String probeBody = payloadBuilder.buildBodyJson(
+                req.courtId(), req.playDate().toString(), req.slotTime(), BigDecimal.ZERO, players);
+        BigDecimal price = totalPrice(api.price(probeBody));
+        Instant targetFireAt = computeFireInstant(req.playDate());
+
+        QueuedBooking b = new QueuedBooking();
+        b.setUserId(userId);
+        b.setCourtId(req.courtId());
+        b.setCourtName(req.courtName());
+        b.setPlayDate(req.playDate());
+        b.setSlotTime(req.slotTime());
+        b.setSlotTimeFmt(formatSlot(req.slotTime()));
+        b.setPrice(price);
+        b.setPlayersJson(players.toString());
+        b.setTargetFireAt(targetFireAt);
+        b.setStatus(BookingStatus.PENDING);
+
+        QueuedBooking saved = bookings.save(b);
+        log.info("Queued booking {} (user {}) court {} {} {} -> fires {}", saved.getId(), userId,
+                saved.getCourtId(), saved.getPlayDate(), saved.getSlotTimeFmt(), targetFireAt);
+        scheduler.schedule(saved);
+        return saved;
+    }
+
+    public ReserveNowResult reserveNow(CreateBookingRequest req) {
+        long userId = UserContext.require();
+        if (req.playDate().isBefore(LocalDate.now(zone))) {
+            throw new IllegalArgumentException("Play date is in the past");
+        }
+        ensureNotAlreadyScheduled(req.courtId(), req.playDate(), req.slotTime());
+
         JsonNode me = api.me();
         JsonNode team = me.path("user").path("team");
         if (team.isMissingNode() || team.isNull() || !team.has("id")) {
@@ -80,23 +120,86 @@ public class BookingService {
         String body = payloadBuilder.buildBodyJson(
                 req.courtId(), req.playDate().toString(), req.slotTime(), price, players);
 
-        String token = auth.getToken();
+        String token = accounts.getToken(userId);
         ApiResponse resp = api.createReservation(body, token);
         if (resp.status() == 401) {
-            token = auth.refreshToken();
+            token = accounts.refreshToken(userId);
             resp = api.createReservation(body, token);
         }
 
         if (resp.isSuccess()) {
             Long reservationId = parseReservationId(resp.body());
-            log.info("Immediate reservation: court {} {} {} -> reservation {}",
+            log.info("Immediate reservation (user {}): court {} {} {} -> {}", userId,
                     req.courtId(), req.playDate(), formatSlot(req.slotTime()), reservationId);
             return new ReserveNowResult(true, reservationId, price,
                     reservationId != null ? "Reserved (reservation #" + reservationId + ")" : "Reserved");
         }
         String message = humanError(resp);
-        log.info("Immediate reservation failed ({}): {}", resp.status(), message);
+        log.info("Immediate reservation failed for user {} ({}): {}", userId, resp.status(), message);
         return new ReserveNowResult(false, null, price, message);
+    }
+
+    public List<QueuedBooking> list() {
+        return bookings.findByUserIdOrderByTargetFireAtDesc(UserContext.require());
+    }
+
+    public QueuedBooking get(long id) {
+        return bookings.findById(id).orElseThrow(() -> new IllegalArgumentException("No booking " + id));
+    }
+
+    public QueuedBooking cancel(long id) {
+        QueuedBooking b = getOwned(id);
+        if (b.getStatus() != BookingStatus.PENDING) {
+            throw new IllegalStateException("Only PENDING bookings can be cancelled (this one is " + b.getStatus() + ")");
+        }
+        scheduler.cancel(id);
+        b.setStatus(BookingStatus.CANCELLED);
+        b.setNote("Cancelled by user");
+        return bookings.save(b);
+    }
+
+    public List<BookingAttempt> attemptsFor(long bookingId) {
+        getOwned(bookingId);
+        return attempts.findByBookingIdOrderByAttemptAtAsc(bookingId);
+    }
+
+    public List<BookingAttempt> recentAttempts() {
+        List<Long> ids = bookings.findByUserIdOrderByTargetFireAtDesc(UserContext.require())
+                .stream().map(QueuedBooking::getId).toList();
+        if (ids.isEmpty()) return List.of();
+        return attempts.findTop500ByBookingIdInOrderByAttemptAtDesc(ids);
+    }
+
+    private QueuedBooking getOwned(long id) {
+        QueuedBooking b = get(id);
+        Long uid = UserContext.get();
+        if (uid == null || !uid.equals(b.getUserId())) {
+            throw new IllegalArgumentException("No booking " + id);
+        }
+        return b;
+    }
+
+    private void ensureNotAlreadyScheduled(long courtId, LocalDate playDate, int slotTime) {
+        bookings.findFirstByStatusAndCourtIdAndPlayDateAndSlotTime(BookingStatus.PENDING, courtId, playDate, slotTime)
+                .ifPresent(existing -> {
+                    String who = users.findById(existing.getUserId() == null ? -1 : existing.getUserId())
+                            .map(u -> u.getUsername()).orElse("another user");
+                    throw new IllegalStateException("That slot is already scheduled by " + who);
+                });
+    }
+
+    private Instant computeFireInstant(LocalDate playDate) {
+        LocalDate openDate = playDate.minusDays(props.getMaxReservationSpanDays());
+        return openDate.atStartOfDay(zone).toInstant();
+    }
+
+    private BigDecimal totalPrice(JsonNode priceNode) {
+        BigDecimal total = BigDecimal.ZERO;
+        if (priceNode == null || !priceNode.isObject()) return total;
+        for (Map.Entry<String, JsonNode> e : priceNode.properties()) {
+            if (e.getValue().isNumber()) total = total.add(e.getValue().decimalValue());
+        }
+        return total;
     }
 
     private Long parseReservationId(String body) {
@@ -121,86 +224,6 @@ public class BookingService {
         return "Booking failed (HTTP " + resp.status() + ").";
     }
 
-    public QueuedBooking queue(CreateBookingRequest req) {
-        if (req.playDate().isBefore(LocalDate.now(zone))) {
-            throw new IllegalArgumentException("Play date is in the past");
-        }
-
-        JsonNode me = api.me();
-        JsonNode team = me.path("user").path("team");
-        if (team.isMissingNode() || team.isNull() || !team.has("id")) {
-            throw new IllegalStateException("Could not resolve your team from /me");
-        }
-
-        ArrayNode players = payloadBuilder.playersArray(team);
-        String probeBody = payloadBuilder.buildBodyJson(
-                req.courtId(), req.playDate().toString(), req.slotTime(), BigDecimal.ZERO, players);
-
-        BigDecimal price = totalPrice(api.price(probeBody));
-        Instant targetFireAt = computeFireInstant(req.playDate());
-
-        QueuedBooking b = new QueuedBooking();
-        b.setCourtId(req.courtId());
-        b.setCourtName(req.courtName());
-        b.setPlayDate(req.playDate());
-        b.setSlotTime(req.slotTime());
-        b.setSlotTimeFmt(formatSlot(req.slotTime()));
-        b.setPrice(price);
-        b.setPlayersJson(players.toString());
-        b.setTargetFireAt(targetFireAt);
-        b.setStatus(BookingStatus.PENDING);
-
-        QueuedBooking saved = bookings.save(b);
-        log.info("Queued booking {} for court {} on {} {} -> fires at {}", saved.getId(),
-                saved.getCourtId(), saved.getPlayDate(), saved.getSlotTimeFmt(), targetFireAt);
-        scheduler.schedule(saved);
-        return saved;
-    }
-
-    public List<QueuedBooking> list() {
-        return bookings.findAllByOrderByTargetFireAtDesc();
-    }
-
-    public QueuedBooking get(long id) {
-        return bookings.findById(id).orElseThrow(() -> new IllegalArgumentException("No booking " + id));
-    }
-
-    public QueuedBooking cancel(long id) {
-        QueuedBooking b = get(id);
-        if (b.getStatus() != BookingStatus.PENDING) {
-            throw new IllegalStateException("Only PENDING bookings can be cancelled (this one is " + b.getStatus() + ")");
-        }
-        scheduler.cancel(id);
-        b.setStatus(BookingStatus.CANCELLED);
-        b.setNote("Cancelled by user");
-        return bookings.save(b);
-    }
-
-    public List<BookingAttempt> attemptsFor(long bookingId) {
-        return attempts.findByBookingIdOrderByAttemptAtAsc(bookingId);
-    }
-
-    public List<BookingAttempt> recentAttempts() {
-        return attempts.findTop500ByOrderByAttemptAtDesc();
-    }
-
-    /** The instant the play date opens for booking: 00:00 club-time, span days before. */
-    private Instant computeFireInstant(LocalDate playDate) {
-        LocalDate openDate = playDate.minusDays(props.getMaxReservationSpanDays());
-        return openDate.atStartOfDay(zone).toInstant();
-    }
-
-    private BigDecimal totalPrice(JsonNode priceNode) {
-        BigDecimal total = BigDecimal.ZERO;
-        if (priceNode == null || !priceNode.isObject()) return total;
-        for (Iterator<Map.Entry<String, JsonNode>> it = priceNode.properties().iterator(); it.hasNext(); ) {
-            JsonNode v = it.next().getValue();
-            if (v.isNumber()) total = total.add(v.decimalValue());
-        }
-        return total;
-    }
-
-    /** Decimal-hours x100 -> "HH:mm". 1450 -> "14:30", 700 -> "07:00". */
     private static String formatSlot(int timeCode) {
         int hours = timeCode / 100;
         int minutes = Math.round((timeCode % 100) * 0.6f);
