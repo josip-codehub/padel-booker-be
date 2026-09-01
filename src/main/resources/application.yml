@@ -17,6 +17,13 @@ spring:
   liquibase:
     change-log: classpath:db/changelog/db.changelog-master.yaml
 
+app:
+  auth:
+    username: ${APP_USERNAME:admin}
+    password: ${APP_PASSWORD:}          # REQUIRED for a public deploy; blank = API locked down
+    secret: ${APP_AUTH_SECRET:}         # set to persist logins across restarts
+    token-ttl-days: 30
+
 sporty:
   auth-base-url: ${SPORTY_AUTH_BASE_URL:https://api.sporty.plus/api/v3}
   api-base-url: ${SPORTY_API_BASE_URL:https://api.tenis.plus/v2}
