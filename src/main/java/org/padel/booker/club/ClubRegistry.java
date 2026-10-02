@@ -16,8 +16,10 @@ public class ClubRegistry {
     private final List<SupportedClub> clubs = List.of(
             // Modesto: a single 90-minute padel slot per booking, 7-day window.
             new SupportedClub(139, "Modesto", "https://modesto.sporty.plus", 90, 1, 1, 7),
-            // Silax Sisak: 30-minute slots, 2..4 of them per booking (1h min, 2h max), 14-day window.
-            new SupportedClub(20, "Silax Sisak", "https://silax.sporty.plus", 30, 2, 4, 14)
+            // Silax Sisak: 30-minute slots, 14-day window. Minimum 2 slots (1h); no artificial upper
+            // cap — the picker is bounded by how many consecutive slots are actually free, and the club
+            // itself is the final authority on any max length at booking time.
+            new SupportedClub(20, "Silax Sisak", "https://silax.sporty.plus", 30, 2, 48, 14)
     );
 
     public List<SupportedClub> all() {
