@@ -9,3 +9,11 @@ databaseChangeLog:
       file: db/changelog/changes/004-create-app-users.yaml
   - include:
       file: db/changelog/changes/005-add-user-ownership.yaml
+  - include:
+      file: db/changelog/changes/006-create-user-clubs.yaml
+  - include:
+      file: db/changelog/changes/007-multi-slot-and-club.yaml
+  - include:
+      file: db/changelog/changes/008-create-fixed-bookings.yaml
+  - include:
+      file: db/changelog/changes/009-create-user-prefs.yaml

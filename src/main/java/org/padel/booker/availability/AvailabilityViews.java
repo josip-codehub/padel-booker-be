@@ -33,5 +33,13 @@ public final class AvailabilityViews {
             List<CourtDay> days
     ) {}
 
-    public record Week(String from, String to, List<CourtWeek> courts) {}
+    /** All courts of one club for the range (the UI renders one section per club). */
+    public record ClubSection(
+            long clubId,
+            String clubName,
+            boolean error,        // true if this club's live fetch failed
+            List<CourtWeek> courts
+    ) {}
+
+    public record Week(String from, String to, List<ClubSection> clubs) {}
 }

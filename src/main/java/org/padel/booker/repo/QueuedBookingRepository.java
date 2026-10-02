@@ -22,4 +22,13 @@ public interface QueuedBookingRepository extends JpaRepository<QueuedBooking, Lo
     /** Is this exact slot already scheduled by anyone (to prevent double-scheduling)? */
     Optional<QueuedBooking> findFirstByStatusAndCourtIdAndPlayDateAndSlotTime(
             BookingStatus status, Long courtId, LocalDate playDate, int slotTime);
+
+    /** All bookings in a status for one court+date (multi-slot overlap checks). */
+    List<QueuedBooking> findByStatusAndCourtIdAndPlayDate(BookingStatus status, Long courtId, LocalDate playDate);
+
+    /** Occurrences spawned by a given fixed booking for a given play date (dedup when spawning). */
+    List<QueuedBooking> findByFixedBookingIdAndPlayDate(Long fixedBookingId, LocalDate playDate);
+
+    /** All occurrences of a fixed booking in a status (e.g. cancel the pending ones). */
+    List<QueuedBooking> findByFixedBookingIdAndStatus(Long fixedBookingId, BookingStatus status);
 }

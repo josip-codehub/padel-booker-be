@@ -45,11 +45,22 @@ public class SportyApiClient {
         this.props = props;
     }
 
-    /** GET /me — also the token health check. */
+    /** GET /me — also the token health check. Uses the default (Modesto) origin. */
     public JsonNode me() {
+        return me(props.getOrigin());
+    }
+
+    /**
+     * GET /me with an explicit {@code origin} header (null = client default). The membership block in
+     * the response (e.g. {@code max_reservation_span}) is scoped to the origin's club.
+     */
+    public JsonNode me(String origin) {
         return withAuthRetry(token -> api.get()
                 .uri("/me")
-                .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                .headers(h -> {
+                    h.set(HttpHeaders.AUTHORIZATION, bearer(token));
+                    if (origin != null) h.set("origin", origin);
+                })
                 .retrieve()
                 .body(JsonNode.class));
     }
@@ -77,7 +88,7 @@ public class SportyApiClient {
                             .queryParam("limit", 1000)
                             .queryParam("page", p)
                             .build())
-                    .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                    .headers(h -> auth(h, token, props.getOrigin()))
                     .retrieve()
                     .body(JsonNode.class));
             if (resp == null) break;
@@ -91,14 +102,14 @@ public class SportyApiClient {
         return all;
     }
 
-    /** Active courts for the configured club, including working_hours. */
-    public JsonNode getCourts() {
+    /** Active courts for a club, including working_hours. */
+    public JsonNode getCourts(ClubRef club) {
         return withAuthRetry(token -> api.get()
                 .uri(b -> b.path("/court")
-                        .queryParam("filter[club_id]", props.getClubId())
+                        .queryParam("filter[club_id]", club.clubId())
                         .queryParam("filter[is_active]", 1)
                         .build())
-                .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                .headers(h -> auth(h, token, club.origin()))
                 .retrieve()
                 .body(JsonNode.class));
     }
@@ -111,25 +122,25 @@ public class SportyApiClient {
      *
      * Note: slot time codes are decimal-hours x100 (07:00=700, 14:30=1450, 20:30=2050).
      */
-    public JsonNode getCourtsWithAvailability(LocalDate from, LocalDate to) {
+    public JsonNode getCourtsWithAvailability(ClubRef club, LocalDate from, LocalDate to) {
         return withAuthRetry(token -> api.get()
                 .uri(b -> b.path("/court")
                         .queryParam("filter[is_active]", 1)
-                        .queryParam("filter[club_id]", props.getClubId())
+                        .queryParam("filter[club_id]", club.clubId())
                         .queryParam("from_date", from.toString())
                         .queryParam("to_date", to.toString())
                         .queryParam("parsed2", true)
                         .build())
-                .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                .headers(h -> auth(h, token, club.origin()))
                 .retrieve()
                 .body(JsonNode.class));
     }
 
     /** POST /reservation/price — returns {"<playerId>": price}. */
-    public JsonNode price(String bodyJson) {
+    public JsonNode price(ClubRef club, String bodyJson) {
         return withAuthRetry(token -> api.post()
                 .uri("/reservation/price")
-                .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                .headers(h -> auth(h, token, club.origin()))
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(bodyJson)
                 .retrieve()
@@ -137,21 +148,21 @@ public class SportyApiClient {
     }
 
     /** Raw create — never throws on 4xx; the burst executor interprets the result. */
-    public ApiResponse createReservation(String bodyJson, String token) {
+    public ApiResponse createReservation(ClubRef club, String bodyJson, String token) {
         return api.post()
                 .uri("/reservation")
-                .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                .headers(h -> auth(h, token, club.origin()))
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(bodyJson)
                 .exchange((req, res) -> new ApiResponse(res.getStatusCode().value(), readBody(res.getBody())));
     }
 
     /** DELETE /reservation/{id}. */
-    public void deleteReservation(long reservationId) {
+    public void deleteReservation(ClubRef club, long reservationId) {
         withAuthRetry(token -> {
             api.delete()
                     .uri("/reservation/{id}", reservationId)
-                    .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                    .headers(h -> auth(h, token, club.origin()))
                     .retrieve()
                     .toBodilessEntity();
             return null;
@@ -163,13 +174,13 @@ public class SportyApiClient {
      * (serverMillis - localMillis). Positive means the server is ahead of us.
      * Uses the Date response header; corrected for round-trip midpoint.
      */
-    public long measureServerOffsetMillis() {
+    public long measureServerOffsetMillis(String origin) {
         String token = accounts.getToken(UserContext.require());
         long t0 = System.currentTimeMillis();
         Instant[] serverInstant = new Instant[1];
         api.get()
                 .uri("/me")
-                .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                .headers(h -> auth(h, token, origin))
                 .exchange((req, res) -> {
                     String date = res.getHeaders().getFirst(HttpHeaders.DATE);
                     if (date != null) {
@@ -224,6 +235,11 @@ public class SportyApiClient {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    private static void auth(HttpHeaders h, String token, String origin) {
+        h.set(HttpHeaders.AUTHORIZATION, bearer(token));
+        if (origin != null) h.set("origin", origin);
     }
 
     private static String bearer(String token) {

@@ -28,8 +28,8 @@ public class MyReservationsController {
 
     /** Cancel one of the player's reservations on Sporty Plus. */
     @DeleteMapping("/{id}")
-    public Map<String, Object> cancel(@PathVariable long id) {
-        service.cancel(id);
+    public Map<String, Object> cancel(@PathVariable long id, @RequestParam(required = false) Long club) {
+        service.cancel(club != null ? club : 0L, id);
         return Map.of("canceled", true, "id", id);
     }
 }

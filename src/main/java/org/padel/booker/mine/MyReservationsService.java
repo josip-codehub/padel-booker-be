@@ -1,6 +1,8 @@
 package org.padel.booker.mine;
 
+import org.padel.booker.client.ClubRef;
 import org.padel.booker.client.SportyApiClient;
+import org.padel.booker.club.ClubRegistry;
 import org.padel.booker.config.SportyProperties;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
@@ -17,10 +19,14 @@ import java.util.List;
 public class MyReservationsService {
 
     private final SportyApiClient api;
+    private final ClubRegistry registry;
+    private final SportyProperties props;
     private final ZoneId zone;
 
-    public MyReservationsService(SportyApiClient api, SportyProperties props) {
+    public MyReservationsService(SportyApiClient api, ClubRegistry registry, SportyProperties props) {
         this.api = api;
+        this.registry = registry;
+        this.props = props;
         this.zone = ZoneId.of(props.getTimezone());
     }
 
@@ -38,8 +44,9 @@ public class MyReservationsService {
         return out;
     }
 
-    public void cancel(long reservationId) {
-        api.deleteReservation(reservationId);
+    public void cancel(long clubId, long reservationId) {
+        ClubRef club = registry.find(clubId).map(c -> c.ref()).orElse(new ClubRef(clubId, props.getOrigin()));
+        api.deleteReservation(club, reservationId);
     }
 
     private MyReservationView map(JsonNode r, long playerId) {
@@ -47,6 +54,7 @@ public class MyReservationsService {
         JsonNode court = r.path("court");
         long courtId = court.path("id").asLong();
         String courtName = court.path("name").asText(null);
+        long clubId = court.path("club_id").asLong(r.path("club").path("id").asLong(0));
 
         String fromStr = r.path("from").asText(null);
         String date = fromStr != null ? Instant.parse(fromStr).atZone(zone).toLocalDate().toString() : null;
@@ -67,6 +75,7 @@ public class MyReservationsService {
 
         return new MyReservationView(
                 id,
+                clubId,
                 courtId,
                 courtName,
                 date,

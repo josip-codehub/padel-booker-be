@@ -1,0 +1,50 @@
+databaseChangeLog:
+  - changeSet:
+      id: 006-create-user-clubs
+      author: padel-booker
+      changes:
+        - createTable:
+            tableName: user_clubs
+            columns:
+              - column:
+                  name: id
+                  type: bigint
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: club_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: max_span_days
+                  type: int
+                  constraints:
+                    nullable: false
+              - column:
+                  name: enabled
+                  type: boolean
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamp
+        - addForeignKeyConstraint:
+            baseTableName: user_clubs
+            baseColumnNames: user_id
+            referencedTableName: app_users
+            referencedColumnNames: id
+            constraintName: fk_user_clubs_user
+            onDelete: CASCADE
+        - addUniqueConstraint:
+            tableName: user_clubs
+            columnNames: user_id, club_id
+            constraintName: uq_user_clubs_user_club

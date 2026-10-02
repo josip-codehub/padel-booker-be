@@ -2,8 +2,11 @@ package org.padel.booker.api;
 
 import org.padel.booker.auth.SportyAccountService;
 import org.padel.booker.auth.UserContext;
+import org.padel.booker.club.ClubService;
 import org.padel.booker.domain.Credential;
 import org.padel.booker.repo.CredentialRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
@@ -14,12 +17,16 @@ import java.util.Map;
 @RequestMapping("/api/settings")
 public class SettingsController {
 
+    private static final Logger log = LoggerFactory.getLogger(SettingsController.class);
+
     private final CredentialRepository credentials;
     private final SportyAccountService accounts;
+    private final ClubService clubs;
 
-    public SettingsController(CredentialRepository credentials, SportyAccountService accounts) {
+    public SettingsController(CredentialRepository credentials, SportyAccountService accounts, ClubService clubs) {
         this.credentials = credentials;
         this.accounts = accounts;
+        this.clubs = clubs;
     }
 
     public record SettingsRequest(String email, String password, String token) {}
@@ -63,6 +70,15 @@ public class SettingsController {
         } catch (RuntimeException e) {
             loginOk = false;
             message = "Saved, but login failed: " + e.getMessage();
+        }
+
+        // Discover which supported clubs this account belongs to (best-effort; needs a working token).
+        if (loginOk) {
+            try {
+                clubs.refreshForUser(userId);
+            } catch (RuntimeException e) {
+                log.info("Club discovery after settings save failed for user {}: {}", userId, e.getMessage());
+            }
         }
         return Map.of("configured", true, "loginOk", loginOk, "message", message);
     }

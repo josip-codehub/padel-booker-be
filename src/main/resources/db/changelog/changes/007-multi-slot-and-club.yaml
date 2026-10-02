@@ -1,0 +1,41 @@
+databaseChangeLog:
+  - changeSet:
+      id: 007-queued-bookings-multi-slot-and-club
+      author: padel-booker
+      changes:
+        - addColumn:
+            tableName: queued_bookings
+            columns:
+              - column:
+                  name: club_id
+                  type: bigint
+              - column:
+                  name: slot_count
+                  type: int
+                  defaultValueNumeric: 1
+                  constraints:
+                    nullable: false
+              - column:
+                  name: slot_minutes
+                  type: int
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: slot_times_csv
+                  type: varchar(500)
+              - column:
+                  name: slots_json
+                  type: text
+              - column:
+                  name: slot_end_fmt
+                  type: varchar(5)
+              - column:
+                  name: fixed_booking_id
+                  type: bigint
+        - createIndex:
+            tableName: queued_bookings
+            indexName: idx_queued_bookings_fixed
+            columns:
+              - column:
+                  name: fixed_booking_id

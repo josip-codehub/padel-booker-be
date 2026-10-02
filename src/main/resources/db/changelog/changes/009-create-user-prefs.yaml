@@ -1,0 +1,37 @@
+databaseChangeLog:
+  - changeSet:
+      id: 009-create-user-prefs
+      author: padel-booker
+      changes:
+        - createTable:
+            tableName: user_prefs
+            columns:
+              - column:
+                  name: id
+                  type: bigint
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: court_prefs_json
+                  type: text
+              - column:
+                  name: availability_prefs_json
+                  type: text
+              - column:
+                  name: updated_at
+                  type: timestamptz
+        - addForeignKeyConstraint:
+            baseTableName: user_prefs
+            baseColumnNames: user_id
+            referencedTableName: app_users
+            referencedColumnNames: id
+            constraintName: fk_user_prefs_user
+            onDelete: CASCADE

@@ -5,7 +5,9 @@ import tools.jackson.databind.ObjectMapper;
 import org.padel.booker.auth.SportyAccountService;
 import org.padel.booker.auth.UserContext;
 import org.padel.booker.client.ApiResponse;
+import org.padel.booker.client.ClubRef;
 import org.padel.booker.client.SportyApiClient;
+import org.padel.booker.club.ClubRegistry;
 import org.padel.booker.config.SportyProperties;
 import org.padel.booker.domain.AttemptOutcome;
 import org.padel.booker.domain.BookingAttempt;
@@ -35,10 +37,11 @@ public class BookingExecutor {
     private final BookingAttemptRepository attempts;
     private final SportyProperties props;
     private final ObjectMapper mapper;
+    private final ClubRegistry registry;
 
     public BookingExecutor(SportyApiClient api, SportyAccountService accounts, ReservationPayloadBuilder payloadBuilder,
                            QueuedBookingRepository bookings, BookingAttemptRepository attempts,
-                           SportyProperties props, ObjectMapper mapper) {
+                           SportyProperties props, ObjectMapper mapper, ClubRegistry registry) {
         this.api = api;
         this.accounts = accounts;
         this.payloadBuilder = payloadBuilder;
@@ -46,6 +49,13 @@ public class BookingExecutor {
         this.attempts = attempts;
         this.props = props;
         this.mapper = mapper;
+        this.registry = registry;
+    }
+
+    /** The club context for a booking (falls back to Modesto/default origin for legacy rows). */
+    private ClubRef resolveClub(QueuedBooking booking) {
+        Long clubId = booking.getClubId() != null ? booking.getClubId() : 139L;
+        return registry.find(clubId).map(c -> c.ref()).orElse(new ClubRef(clubId, props.getOrigin()));
     }
 
     public void run(long bookingId) {
@@ -70,6 +80,7 @@ public class BookingExecutor {
         log.info("Firing booking {} (user {}, court {}, {} {}) target={}", bookingId, userId,
                 booking.getCourtId(), booking.getPlayDate(), booking.getSlotTimeFmt(), booking.getTargetFireAt());
 
+        ClubRef club = resolveClub(booking);
         UserContext.set(userId);
         try {
             String body;
@@ -80,7 +91,7 @@ public class BookingExecutor {
                 return;
             }
 
-            long offset = safeOffset();
+            long offset = safeOffset(club.origin());
             long target = booking.getTargetFireAt().toEpochMilli();
             // Fire the first attempt firstAttemptAfterMs after the server's midnight (offset = serverMs - localMs).
             long fireStartLocal = target + props.getBooking().getFirstAttemptAfterMs() - offset;
@@ -96,7 +107,7 @@ public class BookingExecutor {
                 attemptNo++;
                 ApiResponse resp;
                 try {
-                    resp = api.createReservation(body, token);
+                    resp = api.createReservation(club, body, token);
                 } catch (RuntimeException e) {
                     record(booking, attemptNo, body, null, "exception: " + e.getMessage(), AttemptOutcome.ERROR);
                     sleep(props.getBooking().getIntervalMs());
@@ -137,9 +148,9 @@ public class BookingExecutor {
         }
     }
 
-    private long safeOffset() {
+    private long safeOffset(String origin) {
         try {
-            return api.measureServerOffsetMillis();
+            return api.measureServerOffsetMillis(origin);
         } catch (RuntimeException e) {
             log.warn("Clock sync failed ({}); assuming zero offset", e.getMessage());
             return 0;

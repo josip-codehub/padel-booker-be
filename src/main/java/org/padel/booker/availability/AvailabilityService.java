@@ -1,10 +1,15 @@
 package org.padel.booker.availability;
 
 import org.padel.booker.auth.UserContext;
+import org.padel.booker.client.ClubRef;
 import org.padel.booker.client.SportyApiClient;
+import org.padel.booker.club.ClubRegistry;
+import org.padel.booker.club.ClubService;
+import org.padel.booker.club.ClubView;
 import org.padel.booker.domain.AppUser;
 import org.padel.booker.domain.BookingStatus;
 import org.padel.booker.domain.QueuedBooking;
+import org.padel.booker.fixed.FixedBookingService;
 import org.padel.booker.mine.MyReservationView;
 import org.padel.booker.mine.MyReservationsService;
 import org.padel.booker.repo.AppUserRepository;
@@ -23,14 +28,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 
 /**
- * Builds the week availability grid from the upstream's server-precomputed {@code parsed_reservations}
- * (one live call, all courts, whole week), then overlays: slots reserved by the logged-in player on
- * Sporty ({@code mine}) and future slots scheduled in our Queue by any app user ({@code queued}, with
- * the scheduler's username so others can see who took it and can't double-schedule).
+ * Builds the availability grid for one or more clubs. Each club's courts come from the upstream's
+ * server-precomputed {@code parsed_reservations} (one live call per club, all its courts, whole week);
+ * the per-club calls run in parallel because the upstream is slow. Overlays: slots reserved by the
+ * logged-in player on Sporty ({@code mine}), future slots scheduled in our Queue by any app user
+ * ({@code queued}), and slots held by an admin's standing weekly booking.
  *
- * Slot time codes are decimal-hours x100: 700=07:00, 850=08:30, 1450=14:30, 2050=20:30, 2200=22:00.
+ * Slot time codes are decimal-hours x100: 700=07:00, 850=08:30, 1450=14:30, 2050=20:30.
  */
 @Service
 public class AvailabilityService {
@@ -41,47 +49,110 @@ public class AvailabilityService {
     private final QueuedBookingRepository queuedBookings;
     private final MyReservationsService myReservations;
     private final AppUserRepository users;
+    private final ClubService clubs;
+    private final ClubRegistry registry;
+    private final FixedBookingService fixedBookings;
+    private final ExecutorService availabilityExecutor;
 
     public AvailabilityService(SportyApiClient api, QueuedBookingRepository queuedBookings,
-                               MyReservationsService myReservations, AppUserRepository users) {
+                               MyReservationsService myReservations, AppUserRepository users,
+                               ClubService clubs, ClubRegistry registry, FixedBookingService fixedBookings,
+                               ExecutorService availabilityExecutor) {
         this.api = api;
         this.queuedBookings = queuedBookings;
         this.myReservations = myReservations;
         this.users = users;
+        this.clubs = clubs;
+        this.registry = registry;
+        this.fixedBookings = fixedBookings;
+        this.availabilityExecutor = availabilityExecutor;
     }
 
     private record QueuedInfo(Long userId, String username) {}
 
-    public AvailabilityViews.Week getWeek(LocalDate from, LocalDate to) {
+    /**
+     * Availability for the given clubs (defaults to all the user's clubs) and optionally a subset of
+     * courts (empty = all courts of each club). Per-club fetches run concurrently.
+     */
+    public AvailabilityViews.Week getWeek(List<Long> clubIds, Set<Long> courtIds, LocalDate from, LocalDate to) {
         long currentUserId = UserContext.require();
-        JsonNode resp = api.getCourtsWithAvailability(from, to);
-        JsonNode courts = resp.has("data") ? resp.get("data") : resp;
+
+        List<Long> targetClubs = (clubIds == null || clubIds.isEmpty())
+                ? clubs.listForUser(currentUserId).stream().map(ClubView::clubId).toList()
+                : clubIds.stream().filter(id -> clubs.hasAccess(currentUserId, id)).toList();
 
         Map<String, QueuedInfo> queued = queuedMap();
         Set<String> mineKeys = mineKeys(from, to);
-
-        List<AvailabilityViews.CourtWeek> courtWeeks = new ArrayList<>();
-        for (JsonNode court : courts) {
-            long courtId = court.path("id").asLong();
-            String name = court.path("name").asText();
-            String type = court.path("type").asText();
-            int duration = court.path("reservation_duration").asInt(90);
-            JsonNode parsed = court.path("parsed_reservations");
-
-            List<AvailabilityViews.CourtDay> days = new ArrayList<>();
-            for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
-                days.add(new AvailabilityViews.CourtDay(
-                        d.toString(),
-                        slotsForDay(courtId, d, parsed.path(d.toString()), queued, mineKeys, currentUserId)));
-            }
-            courtWeeks.add(new AvailabilityViews.CourtWeek(courtId, name, type, duration, days));
+        Map<String, QueuedInfo> fixedHeld = new HashMap<>();
+        for (org.padel.booker.fixed.HeldSlot h : fixedBookings.heldSlots(from, to)) {
+            fixedHeld.put(codeKey(h.courtId(), h.date().toString(), h.code()),
+                    new QueuedInfo(h.userId(), h.username()));
         }
-        return new AvailabilityViews.Week(from.toString(), to.toString(), courtWeeks);
+
+        // Fan out the slow per-club fetches in parallel.
+        List<CompletableFuture<AvailabilityViews.ClubSection>> futures = new ArrayList<>();
+        for (Long clubId : targetClubs) {
+            futures.add(CompletableFuture.supplyAsync(
+                    () -> fetchClubSection(currentUserId, clubId, courtIds, from, to, queued, mineKeys, fixedHeld),
+                    availabilityExecutor));
+        }
+
+        List<AvailabilityViews.ClubSection> sections = new ArrayList<>();
+        for (CompletableFuture<AvailabilityViews.ClubSection> f : futures) {
+            sections.add(f.join());
+        }
+        // Keep a stable order matching the requested/registry order.
+        sections.sort((a, b) -> Long.compare(order(a.clubId()), order(b.clubId())));
+        return new AvailabilityViews.Week(from.toString(), to.toString(), sections);
+    }
+
+    private long order(long clubId) {
+        List<org.padel.booker.club.SupportedClub> all = registry.all();
+        for (int i = 0; i < all.size(); i++) if (all.get(i).clubId() == clubId) return i;
+        return Long.MAX_VALUE;
+    }
+
+    private AvailabilityViews.ClubSection fetchClubSection(long userId, long clubId, Set<Long> courtIds,
+                                                          LocalDate from, LocalDate to,
+                                                          Map<String, QueuedInfo> queued, Set<String> mineKeys,
+                                                          Map<String, QueuedInfo> fixedHeld) {
+        String clubName = registry.find(clubId).map(org.padel.booker.club.SupportedClub::name).orElse("Club " + clubId);
+        ClubRef ref = registry.ref(clubId);
+        // Worker thread: re-establish the acting user so the API client can pick the right token.
+        UserContext.set(userId);
+        try {
+            JsonNode resp = api.getCourtsWithAvailability(ref, from, to);
+            JsonNode courts = resp.has("data") ? resp.get("data") : resp;
+
+            List<AvailabilityViews.CourtWeek> courtWeeks = new ArrayList<>();
+            for (JsonNode court : courts) {
+                long courtId = court.path("id").asLong();
+                if (courtIds != null && !courtIds.isEmpty() && !courtIds.contains(courtId)) continue;
+                String name = court.path("name").asText();
+                String type = court.path("type").asText();
+                int duration = court.path("reservation_duration").asInt(90);
+                JsonNode parsed = court.path("parsed_reservations");
+
+                List<AvailabilityViews.CourtDay> days = new ArrayList<>();
+                for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
+                    days.add(new AvailabilityViews.CourtDay(
+                            d.toString(),
+                            slotsForDay(courtId, d, parsed.path(d.toString()), queued, mineKeys, fixedHeld, userId)));
+                }
+                courtWeeks.add(new AvailabilityViews.CourtWeek(courtId, name, type, duration, days));
+            }
+            return new AvailabilityViews.ClubSection(clubId, clubName, false, courtWeeks);
+        } catch (RuntimeException e) {
+            log.warn("Availability fetch failed for club {}: {}", clubId, e.getMessage());
+            return new AvailabilityViews.ClubSection(clubId, clubName, true, List.of());
+        } finally {
+            UserContext.clear();
+        }
     }
 
     private List<AvailabilityViews.Slot> slotsForDay(long courtId, LocalDate date, JsonNode dayNode,
                                                      Map<String, QueuedInfo> queued, Set<String> mineKeys,
-                                                     long currentUserId) {
+                                                     Map<String, QueuedInfo> fixedHeld, long currentUserId) {
         List<AvailabilityViews.Slot> slots = new ArrayList<>();
         if (dayNode == null || !dayNode.isObject()) return slots;
 
@@ -101,7 +172,9 @@ public class AvailabilityService {
             String fmt = fmt(time);
             boolean mine = mineKeys.contains(key(courtId, date.toString(), fmt));
 
-            QueuedInfo qi = booked ? null : queued.get(codeKey(courtId, date.toString(), time));
+            String ck = codeKey(courtId, date.toString(), time);
+            QueuedInfo qi = booked ? null : queued.get(ck);
+            if (qi == null && !booked) qi = fixedHeld.get(ck); // standing weekly booking holds the slot
             boolean isQueued = qi != null;
             boolean queuedByMe = qi != null && qi.userId() != null && qi.userId() == currentUserId;
             String queuedBy = qi != null ? qi.username() : null;
@@ -134,8 +207,10 @@ public class AvailabilityService {
         Map<String, QueuedInfo> map = new HashMap<>();
         for (QueuedBooking b : queuedBookings.findByStatusOrderByTargetFireAtAsc(BookingStatus.PENDING)) {
             String uname = b.getUserId() != null ? usernames.getOrDefault(b.getUserId(), "someone") : "someone";
-            map.put(codeKey(b.getCourtId(), b.getPlayDate().toString(), b.getSlotTime()),
-                    new QueuedInfo(b.getUserId(), uname));
+            QueuedInfo info = new QueuedInfo(b.getUserId(), uname);
+            for (int code : b.slotCodes()) {
+                map.put(codeKey(b.getCourtId(), b.getPlayDate().toString(), code), info);
+            }
         }
         return map;
     }

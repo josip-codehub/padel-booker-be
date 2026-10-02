@@ -1,0 +1,101 @@
+databaseChangeLog:
+  - changeSet:
+      id: 008-create-fixed-bookings
+      author: padel-booker
+      changes:
+        - createTable:
+            tableName: fixed_bookings
+            columns:
+              - column:
+                  name: id
+                  type: bigint
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: club_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: court_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: court_name
+                  type: varchar(255)
+              - column:
+                  name: weekday
+                  type: int
+                  constraints:
+                    nullable: false
+              - column:
+                  name: start_date
+                  type: date
+              - column:
+                  name: slot_time
+                  type: int
+                  constraints:
+                    nullable: false
+              - column:
+                  name: slot_time_fmt
+                  type: varchar(5)
+              - column:
+                  name: slot_end_fmt
+                  type: varchar(5)
+              - column:
+                  name: slot_count
+                  type: int
+                  defaultValueNumeric: 1
+                  constraints:
+                    nullable: false
+              - column:
+                  name: slot_minutes
+                  type: int
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: slot_times_csv
+                  type: varchar(500)
+              - column:
+                  name: slots_json
+                  type: text
+              - column:
+                  name: players_json
+                  type: text
+              - column:
+                  name: price
+                  type: numeric(10,2)
+              - column:
+                  name: active
+                  type: boolean
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+              - column:
+                  name: updated_at
+                  type: timestamptz
+        - addForeignKeyConstraint:
+            baseTableName: fixed_bookings
+            baseColumnNames: user_id
+            referencedTableName: app_users
+            referencedColumnNames: id
+            constraintName: fk_fixed_bookings_user
+            onDelete: CASCADE
+        - createIndex:
+            tableName: fixed_bookings
+            indexName: idx_fixed_bookings_active
+            columns:
+              - column:
+                  name: active
