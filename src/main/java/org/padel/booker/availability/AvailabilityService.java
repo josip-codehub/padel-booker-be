@@ -121,7 +121,8 @@ public class AvailabilityService {
         // Worker thread: re-establish the acting user so the API client can pick the right token.
         UserContext.set(userId);
         try {
-            JsonNode resp = api.getCourtsWithAvailability(ref, from, to);
+            // Scope the upstream to the requested courts (big speedup for clubs with many courts).
+            JsonNode resp = api.getCourtsWithAvailability(ref, courtIds, from, to);
             JsonNode courts = resp.has("data") ? resp.get("data") : resp;
 
             List<AvailabilityViews.CourtWeek> courtWeeks = new ArrayList<>();

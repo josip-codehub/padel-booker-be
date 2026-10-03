@@ -22,6 +22,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Collection;
 import java.util.function.Function;
 
 /**
@@ -123,15 +124,26 @@ public class SportyApiClient {
      *
      * Note: slot time codes are decimal-hours x100 (07:00=700, 14:30=1450, 20:30=2050).
      */
-    public JsonNode getCourtsWithAvailability(ClubRef club, LocalDate from, LocalDate to) {
+    /**
+     * Availability grid for a club. When {@code courtIds} is non-empty the upstream is scoped to just
+     * those courts via {@code filter[ids][]} — much faster than fetching all courts (the cost is mostly
+     * fixed server processing per court). Ids from other clubs are harmlessly ignored by {@code club_id}.
+     */
+    public JsonNode getCourtsWithAvailability(ClubRef club, Collection<Long> courtIds, LocalDate from, LocalDate to) {
         return withAuthRetry(token -> api.get()
-                .uri(b -> b.path("/court")
-                        .queryParam("filter[is_active]", 1)
-                        .queryParam("filter[club_id]", club.clubId())
-                        .queryParam("from_date", from.toString())
-                        .queryParam("to_date", to.toString())
-                        .queryParam("parsed2", true)
-                        .build())
+                .uri(b -> {
+                    b.path("/court")
+                            .queryParam("filter[is_active]", 1)
+                            .queryParam("filter[club_id]", club.clubId())
+                            .queryParam("from_date", from.toString())
+                            .queryParam("to_date", to.toString())
+                            .queryParam("parsed2", true);
+                    if (courtIds != null && !courtIds.isEmpty()) {
+                        // Array syntax filter[ids][] — a bare single filter[ids] 500s upstream.
+                        for (Long id : courtIds) b.queryParam("filter[ids][]", id);
+                    }
+                    return b.build();
+                })
                 .headers(h -> auth(h, token, club.origin()))
                 .retrieve()
                 .body(JsonNode.class));
