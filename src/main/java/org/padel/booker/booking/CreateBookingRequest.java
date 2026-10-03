@@ -19,7 +19,8 @@ public record CreateBookingRequest(
         @NotNull LocalDate playDate,
         Integer slotMinutes,                 // court reservation_duration; null = club default
         @NotNull @NotEmpty List<Slot> slots, // consecutive slots, each a start code + its grid price
-        Boolean repeatWeekly                 // admin only; null/false = one-off
+        Boolean repeatWeekly,                // admin only; null/false = one-off
+        List<Long> partnerPlayerIds          // other people to add to the booking (player ids)
 ) {
     public record Slot(@NotNull Integer time, BigDecimal price) {}
 

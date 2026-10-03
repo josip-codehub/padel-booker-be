@@ -149,6 +149,59 @@ public class SportyApiClient {
                 .body(JsonNode.class));
     }
 
+    /** Search 1-player "teams" (people) by name within a club, for adding them to a booking. */
+    public JsonNode searchTeams(ClubRef club, String query) {
+        return withAuthRetry(token -> api.get()
+                .uri(b -> b.path("/team")
+                        .queryParam("filter[display_name]", query == null ? "" : query)
+                        .queryParam("filter[number_of_players]", 1)
+                        .queryParam("filter[club]", club.clubId())
+                        .queryParam("sort", "-id")
+                        .queryParam("page", 1)
+                        .build())
+                .headers(h -> auth(h, token, club.origin()))
+                .retrieve()
+                .body(JsonNode.class));
+    }
+
+    /** The 1-player team object for a given player id (what goes into a reservation's players[]). */
+    public JsonNode getTeamByPlayerId(ClubRef club, long playerId) {
+        JsonNode resp = withAuthRetry(token -> api.get()
+                .uri(b -> b.path("/team")
+                        .queryParam("filter[players]", playerId)
+                        .queryParam("filter[number_of_players]", 1)
+                        .queryParam("filter[club]", club.clubId())
+                        .build())
+                .headers(h -> auth(h, token, club.origin()))
+                .retrieve()
+                .body(JsonNode.class));
+        JsonNode data = resp != null && resp.has("data") ? resp.get("data") : resp;
+        return (data != null && data.isArray() && !data.isEmpty()) ? data.get(0) : null;
+    }
+
+    /** One court's availability for a single day (parsed2) — used to read a reservation's editable object. */
+    public JsonNode getCourtDay(ClubRef club, long courtId, LocalDate date) {
+        return withAuthRetry(token -> api.get()
+                .uri(b -> b.path("/court/{id}")
+                        .queryParam("date", date.toString())
+                        .queryParam("parsed2", true)
+                        .build(courtId))
+                .headers(h -> auth(h, token, club.origin()))
+                .retrieve()
+                .body(JsonNode.class));
+    }
+
+    /** PUT a full reservation object (used to add/remove players). Idempotent: safe to retry. */
+    public JsonNode putReservation(ClubRef club, long reservationId, String bodyJson) {
+        return withAuthRetry(token -> api.put()
+                .uri("/reservation/{id}", reservationId)
+                .headers(h -> auth(h, token, club.origin()))
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(bodyJson)
+                .retrieve()
+                .body(JsonNode.class));
+    }
+
     /** POST /reservation/price — returns {"<playerId>": price}. */
     public JsonNode price(ClubRef club, String bodyJson) {
         return withAuthRetry(token -> api.post()

@@ -19,6 +19,7 @@ import org.padel.booker.domain.FixedBooking;
 import org.padel.booker.domain.QueuedBooking;
 import org.padel.booker.domain.Role;
 import org.padel.booker.fixed.FixedBookingService;
+import org.padel.booker.players.ReservationPlayerService;
 import org.padel.booker.repo.AppUserRepository;
 import org.padel.booker.repo.BookingAttemptRepository;
 import org.padel.booker.repo.QueuedBookingRepository;
@@ -53,13 +54,14 @@ public class BookingService {
     private final ClubService clubService;
     private final ClubRegistry registry;
     private final FixedBookingService fixedBookings;
+    private final ReservationPlayerService reservationPlayers;
     private final ZoneId zone;
 
     public BookingService(SportyApiClient api, SportyAccountService accounts, ReservationPayloadBuilder payloadBuilder,
                           QueuedBookingRepository bookings, BookingAttemptRepository attempts,
                           BookingScheduler scheduler, SportyProperties props, ObjectMapper mapper,
                           AppUserRepository users, ClubService clubService, ClubRegistry registry,
-                          FixedBookingService fixedBookings) {
+                          FixedBookingService fixedBookings, ReservationPlayerService reservationPlayers) {
         this.api = api;
         this.accounts = accounts;
         this.payloadBuilder = payloadBuilder;
@@ -72,6 +74,7 @@ public class BookingService {
         this.clubService = clubService;
         this.registry = registry;
         this.fixedBookings = fixedBookings;
+        this.reservationPlayers = reservationPlayers;
         this.zone = ZoneId.of(props.getTimezone());
     }
 
@@ -111,7 +114,11 @@ public class BookingService {
         if (team.isMissingNode() || team.isNull() || !team.has("id")) {
             throw new IllegalStateException("Could not resolve your team from /me");
         }
-        ArrayNode players = payloadBuilder.playersArray(team);
+        List<Long> partnerIds = req.partnerPlayerIds() == null ? List.of() : req.partnerPlayerIds();
+        if (partnerIds.size() > ReservationPlayerService.MAX_PARTNERS) {
+            throw new IllegalArgumentException("At most " + ReservationPlayerService.MAX_PARTNERS + " other players");
+        }
+        ArrayNode players = payloadBuilder.playersArray(team, reservationPlayers.resolvePartnerTeams(club, partnerIds));
         ArrayNode times = payloadBuilder.buildTimes(req.slots());
         String probeBody = payloadBuilder.buildBodyJson(req.courtId(), req.playDate().toString(), times, players);
         BigDecimal price = totalPrice(api.price(club, probeBody));

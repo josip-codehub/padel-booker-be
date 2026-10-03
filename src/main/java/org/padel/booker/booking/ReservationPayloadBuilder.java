@@ -27,11 +27,15 @@ public class ReservationPayloadBuilder {
         this.props = props;
     }
 
-    /** The players array to persist with a booking: [team, {}]. */
-    public ArrayNode playersArray(JsonNode team) {
+    /** The players array to persist with a booking: [team, {}] solo, or [team, ...partners]. */
+    public ArrayNode playersArray(JsonNode team, List<JsonNode> partners) {
         ArrayNode arr = mapper.createArrayNode();
         arr.add(team.deepCopy());
-        arr.add(mapper.createObjectNode()); // second slot, empty, as the web app sends
+        if (partners == null || partners.isEmpty()) {
+            arr.add(mapper.createObjectNode()); // empty second slot, as the web app sends for a solo booking
+        } else {
+            for (JsonNode p : partners) arr.add(p.deepCopy());
+        }
         return arr;
     }
 
