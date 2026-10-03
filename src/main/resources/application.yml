@@ -28,6 +28,7 @@ sporty:
   auth-base-url: ${SPORTY_AUTH_BASE_URL:https://api.sporty.plus/api/v3}
   api-base-url: ${SPORTY_API_BASE_URL:https://api.tenis.plus/v2}
   origin: ${SPORTY_ORIGIN:https://modesto.sporty.plus}
+  portal-origin: ${SPORTY_PORTAL_ORIGIN:https://my.sporty.plus}
   language: en
   club-id: ${SPORTY_CLUB_ID:139}
   timezone: Europe/Zagreb

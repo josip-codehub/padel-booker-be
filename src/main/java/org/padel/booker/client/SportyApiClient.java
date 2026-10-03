@@ -88,7 +88,8 @@ public class SportyApiClient {
                             .queryParam("limit", 1000)
                             .queryParam("page", p)
                             .build())
-                    .headers(h -> auth(h, token, props.getOrigin()))
+                    // Portal origin so the player's reservations across ALL clubs are returned, not just one.
+                    .headers(h -> auth(h, token, props.getPortalOrigin()))
                     .retrieve()
                     .body(JsonNode.class));
             if (resp == null) break;

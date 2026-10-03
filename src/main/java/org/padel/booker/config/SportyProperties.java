@@ -14,6 +14,8 @@ public class SportyProperties {
     private String apiBaseUrl;
     /** Origin header the upstream expects, e.g. https://modesto.sporty.plus */
     private String origin;
+    /** The aggregator-portal origin; /v2/reservation under it returns a player's bookings across ALL clubs. */
+    private String portalOrigin = "https://my.sporty.plus";
     private String language = "en";
     private long clubId;
     private String timezone = "Europe/Zagreb";
@@ -52,6 +54,8 @@ public class SportyProperties {
     public void setApiBaseUrl(String v) { this.apiBaseUrl = v; }
     public String getOrigin() { return origin; }
     public void setOrigin(String v) { this.origin = v; }
+    public String getPortalOrigin() { return portalOrigin; }
+    public void setPortalOrigin(String v) { this.portalOrigin = v; }
     public String getLanguage() { return language; }
     public void setLanguage(String v) { this.language = v; }
     public long getClubId() { return clubId; }
