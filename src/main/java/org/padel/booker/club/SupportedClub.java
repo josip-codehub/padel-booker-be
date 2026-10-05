@@ -12,6 +12,7 @@ import org.padel.booker.client.ClubRef;
  * - {@code minSlots}/{@code maxSlots}: how many consecutive slots a single booking may span
  *   (Modesto = exactly one 90-min slot; Silax = 2..4 thirty-min slots).
  * - {@code fallbackSpanDays}: advance-booking window to use if {@code /me} doesn't report one.
+ * - {@code latitude}/{@code longitude}: club location for the weather forecast (from Sporty's club data).
  */
 public record SupportedClub(
         long clubId,
@@ -20,7 +21,9 @@ public record SupportedClub(
         int defaultSlotMinutes,
         int minSlots,
         int maxSlots,
-        int fallbackSpanDays
+        int fallbackSpanDays,
+        double latitude,
+        double longitude
 ) {
     public ClubRef ref() {
         return new ClubRef(clubId, origin);
