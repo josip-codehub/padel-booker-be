@@ -205,14 +205,13 @@ public class AvailabilityService {
             String bookedBy = null;
             List<AvailabilityViews.SlotPlayer> players = List.of();
             if (booked) {
-                JsonNode by = slot.path("created_by");
-                bookedBy = by.path("display_name").asText(by.path("name").asText(null));
                 List<AvailabilityViews.SlotPlayer> ps = new ArrayList<>();
                 for (JsonNode p : slot.path("players")) {
                     String pn = p.path("display_name").asText(null);
                     if (pn != null) ps.add(new AvailabilityViews.SlotPlayer(pn, p.path("image").asText(null)));
                 }
                 players = ps;
+                bookedBy = ownerName(slot, ps);
             }
             slots.add(new AvailabilityViews.Slot(time, fmt, booked, mine, isQueued, queuedByMe, queuedBy,
                     price, bookedBy, players));
@@ -250,6 +249,20 @@ public class AvailabilityService {
             log.warn("Could not load own reservations for grid overlay: {}", e.getMessage());
         }
         return keys;
+    }
+
+    /**
+     * Who to show as a booked slot's owner. Normally {@code created_by}; but reservations the club makes
+     * on a player's behalf ({@code type: "in_behalf"}, e.g. front desk or recurring) have no
+     * {@code created_by}, so fall back to the first player, then to the reservation's own name.
+     */
+    private static String ownerName(JsonNode slot, List<AvailabilityViews.SlotPlayer> players) {
+        JsonNode by = slot.path("created_by");
+        String creator = by.path("display_name").asText(by.path("name").asText(null));
+        if (creator != null && !creator.isBlank()) return creator;
+        if (!players.isEmpty()) return players.get(0).name();
+        String name = slot.path("name").asText(null);
+        return (name != null && !name.isBlank()) ? name : null;
     }
 
     private static String fmt(int timeCode) {
